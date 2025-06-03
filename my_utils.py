@@ -5,7 +5,6 @@ import sys
 import tempfile
 import shutil
 import pathlib
-import argparse
 import streamlit as st
 
 from functools import lru_cache
@@ -13,7 +12,6 @@ from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 import gridfs
 
-from langchain_ollama import OllamaEmbeddings
 from langchain_openai import ChatOpenAI
 
 from src.data_processing.pdf_to_md import convert_pdf_to_md
@@ -119,14 +117,6 @@ def clear_folder(folder_path: str, preserve_files: str = None) -> str:
         return ""
 
 
-class Config:
-    """
-    Хранит общий embedding_function, чтобы не создавать новый каждый раз.
-    """
-    embedding_function = OllamaEmbeddings(model="nomic-embed-text:latest")
-
-
-config = Config()
 
 
 class StreamlitLogger:
@@ -155,23 +145,6 @@ class StreamlitLogger:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout = self.original_stdout
-
-
-def check_chroma_connection(persist_dir: str) -> str:
-    """
-    Проверяет подключение к локальной Chroma DB (persist_directory=persist_dir).
-    Возвращает строку статуса.
-    """
-    try:
-        from langchain_chroma import Chroma
-        vectordb = Chroma(
-            persist_directory=persist_dir,
-            embedding_function=config.embedding_function
-        )
-        docs = vectordb.get().get("documents", [])
-        return f"✅ ChromaDB: Connected. Documents: {len(docs)}"
-    except Exception as e:
-        return f"❌ ChromaDB: Connection failed: {e}"
 
 
 def save_uploaded_file(uploaded_file, save_path: str) -> bool:
