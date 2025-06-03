@@ -1,0 +1,133 @@
+=== PROMPT ===
+You are a precise assistant.
+Answer the question strictly based on the provided context. Do not add any external facts or assumptions.
+Cite the source after every factual statement using the format (source: filename.md, chunk N).
+
+Query:
+How are matroidal properties used to define decompositions into spanning trees or maps, and what are the implications for graph rigidity?
+
+Context:
+Source: 0704.0002.md (chunk 14)
+Content: -----
+
+
+
+4 Ileana Streinu, Louis Theran
+
+
+(a)
+
+
+(b)
+
+
+(c)
+
+**Fig. 2. (a) A graph with a 3T2 decomposition; one of the three trees is a single vertex in the bottom right**
+corner. (b) The highlighted subgraph inside the dashed countour has three black tree-pieces and one gray
+tree-piece. (c) The highlighted subgraph inside the dashed countour has three gray tree-pieces (one is a
+single vertex) and one black tree-piece.
+
+Edmonds [3, 4] gave another proof of this result using matroid unions. The equivalence of mapsand-trees graphs and tight graphs in the lower range is shown using matroid unions in [24], and
+matroid augmenting paths are the basis of the algorithms for the lower range of [5, 6, 19].
+In rigidity theory a foundational theorem of Laman [11] shows that (2, 3)-tight (Laman)
+graphs correspond to generically minimally rigid bar-and-joint frameworks in the plane. Tay
+
+Source: 0704.0002.md (chunk 13)
+Content: _The decomposition problem._ We define the decomposition problem for sparse graphs as taking a graph as its input and producing as output, a decomposition that can be used to certify sparsity. In this paper, we will study three kinds of outputs: maps-and-trees; proper ℓTk decompositions;
+and the pebble-game-with-colors decomposition, which is defined in the next section.
+
+**2. Historical background**
+
+The well-known theorems of Tutte [23] and Nash-Williams [17] relate the (k, _k)-tight graphs to_
+the existence of decompositions into edge-disjoint spanning trees. Taking a matroidal viewpoint,
+
+
+-----
+
+
+
+4 Ileana Streinu, Louis Theran
+
+
+(a)
+
+
+(b)
+
+
+(c)
+
+Source: 0704.3843.md (chunk 5)
+Content: (a) (b) (c)
+
+Figure 1: Adding any two edges to K4 results in two maps.
+
+White and Whiteley [20] observe the matroidal properties of sparse
+graphs for 0 ≤ _ℓ_ _≤_ 2k − 1 in the context of bar-and-joint rigidity for
+frameworks embedded on surfaces [19]. In [15], Szeg˝o characterized exactly
+when tight graphs exist.
+We also state our results in the context of matroid truncations. If M =
+(E, I) is a matroid given by its independent sets, then the truncation of
+_M is the matroid (E, {E[′]_ _∈I : |E[′]| ≤_ _k}), for some nonnegative integer k._
+
+2
+
+
+-----
+
+Source: 0704.0002.md (chunk 65)
+Content: 1. Berg, A.R., Jord´an, T.: Algorithms for graph rigidity and scene analysis. In: Proc. 11th
+European Symposium on Algorithms (ESA ’03), LNCS, vol. 2832, pp. 78–89. (2003)
+2. Crapo, H.: On the generic rigidity of plane frameworks. Tech. Rep. 1278, Institut de
+recherche d’informatique et d’automatique (1988)
+3. Edmonds, J.: Minimum partition of a matroid into independent sets. J. Res. Nat. Bur.
+Standards Sect. B 69B, 67–72 (1965)
+4. Edmonds, J.: Submodular functions, matroids, and certain polyhedra. In: Combinatorial
+Optimization—Eureka, You Shrink!, no. 2570 in LNCS, pp. 11–26. Springer (2003)
+5. Gabow, H.N.: A matroid approach to finding edge connectivity and packing arborescences.
+Journal of Computer and System Sciences 50, 259–273 (1995)
+6. Gabow, H.N., Westermann, H.H.: Forests, frames, and games: Algorithms for matroid sums
+and applications. Algorithmica 7(1), 465–497 (1992)
+7. Haas, R.: Characterizations of arboricity of graphs. Ars Combinatorica 63, 129–137 (2002)
+
+Source: 0704.0002.md (chunk 9)
+Content: 1 Our terminology follows Lov´asz in [16]. In the matroid literature map-graphs are sometimes known as bases
+of the bicycle matroid or spanning pseudoforests.
+
+|Term|Meaning|
+|---|---|
+|Sparse graph G|Every non-empty subgraph on n′ vertices has ≤kn′ −ℓedges|
+|Tight graph G|G = (V,E) is sparse and |V| = n, |E| = kn−ℓ|
+|Block H in G|G is sparse, and H is a tight subgraph|
+|Component H of G|G is sparse and H is a maximal block|
+|Map-graph|Graph that admits an out-degree-exactly-one orientation|
+|(k,ℓ)-maps-and-trees|Edge-disjoint union of ℓtrees and (k −ℓ) map-grpahs|
+|ℓTk|Union of ℓtrees, each vertex is in exactly k of them|
+|Set of tree-pieces of an ℓTk induced on V ′ ⊂V|Pieces of trees in the ℓTk spanned by E(V ′)|
+|Proper ℓTk|Every V ′ ⊂V contains ≥ℓpieces of trees from the ℓTk|
+
+
+-----
+
+
+
+Sparsity-certifying Graph Decompositions 3
+
+
+(a)
+
+
+(b)
+
+
+(c)
+
+=== ANSWER ===
+Based on the provided context, I can answer the question as follows:
+
+Matroidal properties are used to define decompositions into spanning trees or maps by considering the matroid union of independent sets. This approach is related to the concept of map-graphs, which are graphs that admit an out-degree-exactly-one orientation.
+
+The implications for graph rigidity include the fact that (2, 3)-tight graphs correspond to generically minimally rigid bar-and-joint frameworks in the plane, as shown by Laman's theorem. This suggests that matroidal properties can be used to study the rigidity of graphs and their potential applications in fields like computer science and engineering.
+
+Source: 0704.0002.md (chunk 14)

@@ -1,0 +1,27 @@
+pipeline:
+  - stage: retrieval
+    function: get_top_relevant_documents_multi
+    parameters:
+      query: "{{user_query}}"
+      top_n: 5
+    cot_template: |
+      Извлеките топ {top_n} релевантных фрагментов для запроса "{user_query}" 
+      из коллекции, содержащей несколько документов.
+
+  - stage: reasoning
+    function: generate_cot_answer
+    parameters:
+      query: "{{user_query}}"
+      chunks: "{{get_top_relevant_documents_multi_output}}"
+    cot_template: |
+      Выполните многошаговый Chain-of-Thought анализ (CoT) запроса "{user_query}",
+      используя извлечённые фрагменты из нескольких документов.
+      Итеративно уточните ответ, проанализировав предыдущие версии.
+
+  - stage: qa_over_pdf
+    function: answer_query_from_multiple_pdfs
+    parameters:
+      query: "{{user_query}}"
+    cot_template: |
+      Сформируйте итоговый ответ на запрос "{user_query}" на основе 
+      результатов рассуждения и релевантных фрагментов из нескольких документов.

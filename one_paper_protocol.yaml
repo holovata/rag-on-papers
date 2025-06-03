@@ -1,0 +1,35 @@
+pipeline:
+  - stage: retrieval
+    function: get_top_relevant_documents
+    parameters:
+      query: "{{user_query}}"
+      top_n: 7
+    action: |
+      Retrieving the top {top_n} relevant document chunks for the query "{user_query}" from the vector store.
+
+  - stage: reasoning
+    function: generate_cot_answer_with_progress
+    parameters:
+      query: "{{user_query}}"
+      chunks: "{{get_top_relevant_documents_output}}"
+    action: |
+      Analyzing the query "{user_query}" through logical steps using the retrieved document chunks.
+    prompt_template: |
+      Analyse the question “{user_query}” step-by-step, relying only on the
+      information contained in the retrieved chunks. Produce your initial,
+      concise answer first – subsequent iterations will refine it.
+    cot_questions:
+      - Identify potential weaknesses or gaps in your answer.
+      - How can you address those gaps?
+      - What extra details would improve your answer?
+      - Does your answer fully align with the query?
+      - How confident are you, and what would increase confidence?
+      - Summarize an improved final answer.
+
+
+  - stage: qa_over_pdf
+    function: answer_query_from_pdf
+    parameters:
+      query: "{{user_query}}"
+    action: |
+      Generating an answer to the query "{user_query}" based on the retrieved document chunks.

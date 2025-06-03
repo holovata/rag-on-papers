@@ -1,0 +1,139 @@
+pipeline:
+  - stage: retrieval
+    function: get_top_relevant_articles
+    parameters:
+      query: "{{user_query}}"
+      top_n: 7
+      min_similarity: 0.6
+      num_candidates: 150
+    actions: |
+      Searching for {top_n} articles for query "{query}" using vector search in Mongo DB.
+      Selection criterion: dotProduct ≥ {min_similarity}.
+
+  - stage: first_synthesis
+    function: generate_express_answer
+    parameters:
+      articles: "{{get_top_relevant_articles_output}}"
+      query: "{{user_query}}"
+    actions: |
+      Analyzing {num_articles} articles. Generating initial structured report.
+    prompt_template: |
+      You are a scientific assistant helping a researcher understand recent findings.
+      The user is exploring the topic: "{query}".
+
+      Based on {num_articles} articles provided below, generate a structured, human-readable report in Markdown format.
+
+      ## 1. Brief Overview
+      Short summary of what the topic is and why it's important.
+
+      ## 2. Articles with Annotations
+      For each article, include:
+      - **Title**
+      - **Authors**
+      - **Summary** (2–3 sentences max)
+      - **Relevance** to the topic
+      - **PDF Link**
+
+      ## 3. Conclusions
+      Synthesize key findings, highlight methodologies, and propose any interesting trends or future directions.
+
+      ===
+      Articles context:
+      {articles_data}
+
+  - stage: clarification
+    function: generate_clarification
+    parameters:
+      articles: "{{get_top_relevant_articles_output}}"
+      draft: "{{first_synthesis_output}}"
+      query: "{{user_query}}"
+    actions: |
+      Asking the user for refinement. Producing up to 3 clarifying questions.
+    prompt_template: |
+      You are a scientific assistant and have generated this draft answer for the query: "{query}".
+      Identify up to three specific areas where the answer could benefit from more detail or precision.
+      For each area, ask a clarifying question that helps the user specify exactly which aspect they want you to expand on.
+      **Output** only a JSON object in this exact format:
+      {{"questions":["<question1>","<question2>","<question3>"]}}
+
+      Draft answer:
+      {draft}
+
+  - stage: retrieval_refined
+    function: get_top_relevant_articles
+    parameters:
+      query: "{{refined_query}}"
+      top_n: 7
+      min_similarity: 0.6
+    actions: |
+      Re-searching for {top_n} articles for refined query "{query}".
+      Selection criterion: cosine similarity > {min_similarity}.
+
+  - stage: second_synthesis
+    function: generate_express_answer
+    parameters:
+      articles: "{{get_top_relevant_articles_output}}"
+      query: "{{refined_query}}"
+    actions: |
+      Regenerating structured report using refined query and user emphasis.
+    prompt_template: |
+      You are a scientific assistant helping a researcher understand recent findings.
+
+      The user originally asked:
+      "{first_query}"
+
+      They clarified they want more detail on:
+      "{extra}"
+
+      Below is the initial answer you generated:
+      ---
+      {first_synthesis_output}
+      ---
+
+      Now, based on the refined query and the {num_articles} articles listed below, generate a new, improved structured report in Markdown format.
+
+      The report must include:
+
+      ## 1. Brief Overview
+      Short summary of the topic and why it's important.
+
+      ## 2. Articles with Annotations
+      For each article, include:
+      - **Title**
+      - **Authors**
+      - **Summary** (2–3 sentences max)
+      - **Relevance** to the topic
+      - **PDF Link**
+
+      ## 3. Conclusions
+      Synthesize key findings, highlight methodologies, and propose interesting trends or future directions.
+
+      ===
+      Articles context:
+      {articles_data}
+  
+
+  - stage: ideation
+    function: generate_ideas
+    parameters:
+      articles: "{{get_top_relevant_articles_output}}"
+      query: "{{refined_query}}"
+    actions: |
+      Generating 3 research ideas based on latest query and articles.
+    prompt_template: |
+      Generate 3 research ideas as JSON based on the query: "{query}"
+      Context: {num_articles} articles available.
+
+      Requirements:
+      - Exact JSON structure: {{"ideas": ["idea1", "idea2", "idea3"]}}
+      - In English, ≤ 30 words each
+      - No markdown or bullets.
+
+      Example:
+      {{
+        "ideas": [
+          "Explore applications of pebble-game algorithms in dynamic network routing.",
+          "Investigate sparse graph decompositions for model compression in ML.",
+          "Study impact of ℓTk decompositions on rigidity theory."
+        ]
+      }}

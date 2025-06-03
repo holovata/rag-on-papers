@@ -1,0 +1,7 @@
+[theme]
+base = "dark"  # Альтернатива: "light"
+primaryColor = "#FF5733"  # Оранжево-красный
+backgroundColor = "#1E1E2F"  # Темный фон
+secondaryBackgroundColor = "#2A2A3D"  # Вторичный фон
+textColor = "#FFFFFF"  # Белый текст
+font = "sans serif"  # Выбор шрифта: "sans serif", "serif", "monospace"
