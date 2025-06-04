@@ -1,71 +1,146 @@
 import os
-import shutil
-import chromadb
-from langchain_ollama import OllamaEmbeddings
+import sys
+import tempfile
+from pathlib import Path
+from typing import List, Tuple
+
+from dotenv import load_dotenv
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+from pymongo.errors import DuplicateKeyError
+
+from gridfs import GridFS
+from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.data_processing.removetables import remove_markdown_tables
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
-# Пути к файлам
-input_md = r"C:\Work\diplom2\rag_on_papers\data\user_manual\user_manual.md"
-cleaned_md = r"C:\Work\diplom2\rag_on_papers\data\user_manual\user_manual_clean.md"
-embeddings_folder = r"C:\Work\diplom2\rag_on_papers\data\user_manual\embeddings"
+load_dotenv()
 
-def process_and_store_chunks(md_path: str, persist_directory: str) -> None:
-    """Обработка Markdown файла: очистка, разбиение на чанки и сохранение эмбеддингов в ChromaDB."""
+# Constants
+MONGODB_URI       = os.getenv("MONGODB_URI")
+FILE_BUFFER_DB    = "file_buffer_db"
+MANUAL_COLLECTION = "manual_chunks"
+GRIDFS_BUCKET     = "manual_files"
+
+MANUAL_PATH       = Path(r"C:\Work\diplom2\rag_on_papers\data\user_manual\user_manual.md")
+CHUNK_SIZE        = 1000
+CHUNK_OVERLAP     = 200
+
+def mongo_client() -> MongoClient:
     try:
-        # 1) Очистка Markdown от таблиц
-        remove_markdown_tables(md_path, cleaned_md)
-        print(f"[INFO] Cleaned Markdown saved to: {cleaned_md}")
-
-        # 2) Чтение очищенного текста
-        with open(cleaned_md, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        # 3) Настройка эмбединг-модели
-        embed_model = OllamaEmbeddings(model="nomic-embed-text:latest")
-
-        # 4) Инициализация RecursiveCharacterTextSplitter
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,      # размер чанка в символах
-            chunk_overlap=200,    # перекрытие между чанками
-            length_function=len
+        client = MongoClient(
+            MONGODB_URI,
+            server_api=ServerApi("1"),
+            serverSelectionTimeoutMS=10_000,
+            socketTimeoutMS=10_000
         )
-
-        # 5) Разбиение текста на чанки
-        split_documents = text_splitter.create_documents([content])
-
-        # 6) Генерация эмбеддингов для каждого чанка
-        embeddings = embed_model.embed_documents(
-            [doc.page_content for doc in split_documents]
-        )
-
-        # 7) Подготовка папки для хранения эмбеддингов
-        if os.path.exists(persist_directory):
-            shutil.rmtree(persist_directory)
-        os.makedirs(persist_directory, exist_ok=True)
-
-        # 8) Сохранение в ChromaDB
-        client = chromadb.PersistentClient(path=persist_directory)
-        collection = client.get_or_create_collection(name="user_manual_chunks")
-
-        for idx, (doc, emb) in enumerate(zip(split_documents, embeddings)):
-            print(f"[INFO] Processing chunk {idx}: {doc.page_content[:60].replace(os.linesep, ' ')}...")
-            collection.add(
-                ids=[f"{os.path.basename(md_path)}_chunk_{idx}"],
-                embeddings=[emb],
-                documents=[doc.page_content],
-                metadatas=[{
-                    "chunk_index": idx,
-                    "source": os.path.basename(md_path)
-                }]
-            )
-            print(f"[INFO] Chunk {idx} saved.")
-
-        print(f"[SUCCESS] All chunks of {md_path} have been embedded and stored in {persist_directory}")
-
+        client.admin.command("ping")
+        return client
     except Exception as e:
-        print(f"[ERROR] Failed to process {md_path}: {e}")
-        exit(1)
+        print(f"[ERROR] MongoDB connection failed: {e}")
+        sys.exit(1)
+
+def get_gridfs_bucket(client: MongoClient, db_name: str, bucket: str) -> GridFS:
+    db = client[db_name]
+    return GridFS(db, collection=bucket)
+
+def save_to_bucket(fs: GridFS, file_path: Path, filename_in_db: str, overwrite: bool = True):
+    if overwrite:
+        try:
+            for old in fs.find({"filename": filename_in_db}):
+                fs.delete(old._id)
+        except Exception:
+            pass
+    with file_path.open("rb") as fh:
+        fs.put(fh, filename=filename_in_db)
+    print(f"[INFO] Saved to GridFS: {filename_in_db}")
+
+def process_manual():
+    client = mongo_client()
+    db_buffer = client[FILE_BUFFER_DB]
+
+    fs_manual = get_gridfs_bucket(client, FILE_BUFFER_DB, bucket=GRIDFS_BUCKET)
+    save_to_bucket(fs_manual, MANUAL_PATH, MANUAL_PATH.name)
+
+    try:
+        text = MANUAL_PATH.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"[ERROR] Failed to read manual: {e}")
+        client.close()
+        sys.exit(1)
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        length_function=len
+    )
+    documents = splitter.create_documents([text])
+    chunks = [doc.page_content for doc in documents]
+
+    embedder = OpenAIEmbeddings(model="text-embedding-3-small")
+    try:
+        embeddings = embedder.embed_documents(chunks)
+    except Exception as e:
+        print(f"[ERROR] Failed to generate embeddings: {e}")
+        client.close()
+        sys.exit(1)
+
+    coll = db_buffer[MANUAL_COLLECTION]
+    deleted = coll.delete_many({})
+    print(f"[INFO] Cleared collection '{MANUAL_COLLECTION}', removed {deleted.deleted_count} documents.")
+
+    for idx, (chunk_text, emb) in enumerate(zip(chunks, embeddings)):
+        doc_id = f"{MANUAL_PATH.stem}_chunk_{idx}"
+        rec = {
+            "_id":       doc_id,
+            "source":    MANUAL_PATH.name,
+            "chunk_idx": idx,
+            "content":   chunk_text,
+            "embedding": emb
+        }
+        try:
+            coll.insert_one(rec)
+            print(f"[INFO] Inserted chunk #{idx} (id={doc_id})")
+        except DuplicateKeyError:
+            print(f"[WARNING] Chunk #{idx} already exists. Skipping.")
+        except Exception as e:
+            print(f"[ERROR] Failed to insert chunk #{idx}: {e}")
+
+    client.close()
+    print("[SUCCESS] Manual processing complete.")
+
+def search_manual(query: str, top_k: int = 3) -> List[Tuple[float, str]]:
+    client = mongo_client()
+    db = client[FILE_BUFFER_DB]
+    coll = db[MANUAL_COLLECTION]
+
+    docs = list(coll.find({}, {"embedding": 1, "content": 1}))
+    if not docs:
+        print("[ERROR] No documents found in manual_chunks.")
+        return []
+
+    query_embedder = OpenAIEmbeddings(model="text-embedding-3-small")
+    query_vec = query_embedder.embed_query(query)
+
+    doc_vectors = np.array([d["embedding"] for d in docs])
+    similarities = cosine_similarity([query_vec], doc_vectors)[0]
+
+    ranked = sorted(zip(similarities, docs), key=lambda x: -x[0])[:top_k]
+    results = [(sim, doc["content"]) for sim, doc in ranked]
+    client.close()
+    return results
 
 if __name__ == "__main__":
-    process_and_store_chunks(input_md, embeddings_folder)
+    if not MONGODB_URI:
+        print("[ERROR] MONGODB_URI is not set in the environment.")
+        sys.exit(1)
+
+    process_manual()
+
+    # Example query (manual test)
+    test_query = "How can I upload a PDF and ask questions about it?"
+    results = search_manual(test_query)
+    print("\nTop matching chunks:")
+    for score, text in results:
+        print(f"\n[Score: {score:.3f}]\n{text[:300]}...")

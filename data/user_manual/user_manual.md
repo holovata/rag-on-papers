@@ -1,249 +1,207 @@
-Research Assistant Pro: User Manual
-===================================
+# User Manual
 
-Welcome to **Research Assistant Pro**, your one-stop web platform for intelligent scientific document analysis and full-cycle research support. This manual will help you understand the features of the website, guide you through installation and setup, and explain how to get the most out of each mode.
+Welcome to the NOCTUA system -- a research assistant that combines the
+power of vector search, retrieval-augmented generation (RAG), and
+multi-step query analysis.
 
-Table of Contents
------------------
+This manual is intended for both new users unfamiliar with the platform
+and experienced researchers seeking to make the most of the system's
+capabilities.
 
-1.  [Introduction](#introduction)
-    
-2.  [System Requirements](#system-requirements)
-    
-3.  [Installation and Setup](#installation-and-setup)
-    
-4.  [Website Overview](#website-overview)
-    
-    *   [Home Page and Navigation](#home-page-and-navigation)
-        
-    *   [Sidebar Mode Selection](#sidebar-mode-selection)
-        
-5.  [Using the Research Assistant Mode](#using-the-research-assistant-mode)
-    
-    *   [Overview](#overview)
-        
-    *   [Features and Workflow](#features-and-workflow)
-        
-    *   [Step-by-Step Instructions](#step-by-step-instructions)
-        
-6.  [Using the PDF Analysis Mode](#using-the-pdf-analysis-mode)
-    
-    *   [Overview](#overview-1)
-        
-    *   [Features and Workflow](#features-and-workflow-1)
-        
-    *   [Step-by-Step Instructions](#step-by-step-instructions-1)
-        
-7.  [Troubleshooting and FAQs](#troubleshooting-and-faqs)
-    
-8.  [Support and Contact](#support-and-contact)
-    
-9.  [Conclusion](#conclusion)
-    
+The system allows you to:
 
-1\. Introduction
-----------------
+-   search for relevant information in a scientific abstracts database
+    > (arXiv.org);
 
-**Research Assistant Pro** is designed to empower researchers, academics, and professionals with advanced tools for analyzing scientific documents and supporting the full research cycle. The platform leverages state-of-the-art technologies including:
+-   analyze one or more PDF documents;
 
-*   **Ollama LLM integration** for AI-driven natural language understanding.
-    
-*   **ChromaDB vector database** for semantic search and context-aware document retrieval.
-    
-*   **LangChain** for orchestrating multi-stage document analysis pipelines.
-    
-*   **Streamlit** for an interactive and responsive user interface.
-    
+-   ask questions about internal documentation of the platform itself;
 
-By combining these tools, Research Assistant Pro enables users to perform deep document analysis, answer research queries intelligently, and extract meaningful insights from complex PDF documents.
+-   use a query refinement mechanism to improve results.
 
-2\. System Requirements
------------------------
+All components of the system are presented as interactive pages. This
+manual explains in detail the purpose of each page, available user
+actions, and expected outcomes.
 
-Before using Research Assistant Pro, ensure your system meets the following requirements:
+Below you will find a description of the navigation menu, operational
+modes, tips on how to formulate queries, and examples of interaction
+with the system.
 
-*   **Ollama LLM Server**: Must be installed and running locally.
-    
-*   **ChromaDB Vector Database**: Set up for semantic document search.
-    
-*   **Python Environment**: Python 3.9 or later.
-    
-*   **Additional Dependencies**: Ensure that all required Python libraries (such as Streamlit, LangChain, etc.) are installed.
-    
+## 1. Welcome Page and Navigation
 
-> **Tip:** Follow your installation guide or README for dependency installation commands (typically using pip install -r requirements.txt).
+When the application starts, the welcome page appears, introducing users
+to the capabilities of the NOCTUA system. It includes:
 
-3\. Installation and Setup
---------------------------
+-   A heading and a brief description of the system\'s purpose;
 
-### Step 1: Install Python 3.9+
+-   A list of the platform's main features, each accompanied by an icon;
 
-*   Download and install Python from the [official website](https://www.python.org/downloads/).
-    
+-   An explanation of pipeline structure (working stages: retrieval,
+    generation, refinement, etc.);
 
-### Step 2: Set Up a Virtual Environment (Optional but Recommended)
+-   Tips on how to get started: how to select a mode, enable query
+    refinement, or upload a PDF.
 
-Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   python -m venv venv  source venv/bin/activate  # On Windows use: venv\Scripts\activate   `
+This page does not perform any analytical functions --- it is purely
+introductory and informative.
 
-### Step 3: Install Dependencies
+On the left side, there is a navigation menu available on all pages. It
+allows quick switching between modes.
 
-Navigate to your project folder and install the necessary packages:
+## 2 Abstract Search Page
 
-Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   pip install -r requirements.txt   `
+This section allows users to obtain a concise overview of scientific
+publications related to a topic of interest. Simply enter your query
+into the text field -- the system will retrieve the most relevant
+articles, generate a summary report, and suggest ideas for further
+research.
 
-### Step 4: Configure External Services
+Optionally, you can enable the refinement mode to expand or adjust your
+query after the initial analysis. This feature allows for more accurate
+answers tailored to your interests.
 
-*   **Ollama LLM Server**: Ensure it is running on your local machine. Check your configuration settings.
-    
-*   **ChromaDB**: Verify your vector database is properly set up and accessible.
-    
+In addition to the standard navigation menu, the sidebar contains an
+Info and Settings section that provides a quick diagnostic of the
+system\'s connection to external services.
 
-### Step 5: Run the Application
+MongoDB Status indicates whether the connection to the scientific
+metadata database was successful. If connected, it also shows the number
+of documents loaded (e.g., Connected • docs loaded: 20000).
 
-Launch your application using Streamlit:
+OpenAI API Status reports the availability of language models used for
+answer generation and vectorization. A message such as Connected is
+shown upon successful connection.
 
-Plain textANTLR4BashCC#CSSCoffeeScriptCMakeDartDjangoDockerEJSErlangGitGoGraphQLGroovyHTMLJavaJavaScriptJSONJSXKotlinLaTeXLessLuaMakefileMarkdownMATLABMarkupObjective-CPerlPHPPowerShell.propertiesProtocol BuffersPythonRRubySass (Sass)Sass (Scss)SchemeSQLShellSwiftSVGTSXTypeScriptWebAssemblyYAMLXML`   streamlit run your_app.py   `
+These statuses are updated automatically every time the page is opened
+and require no user action. If a connection is unavailable, an error
+message is displayed in red instead of the green indicator.
 
-Once running, open your browser and navigate to the provided localhost URL.
+Below the status indicators is the Enable refinement mode button, which
+toggles query refinement.
 
-4\. Website Overview
---------------------
+### 2.1 Working Without Query Refinement
 
-### Home Page and Navigation
+To initiate a search, enter a query in the text field at the top of the
+page and click the Run Query button. The system will automatically
+analyze the available abstracts and generate a report.
 
-Upon accessing the website, you'll be greeted by the home page which includes:
+While the query is being processed, progress indicators are shown on
+screen, reflecting the sequence of steps: retrieving relevant articles,
+generating the answer, and preparing follow-up ideas.
 
-*   **Header**: Displays the project name and icon.
-    
-*   **Main Content**: Brief description of the platform and its capabilities.
-    
-*   **Sidebar**: Mode selection for navigating between different features.
-    
+Once the generation process is complete, the user is presented with:
 
-### Sidebar Mode Selection
+-   a structured answer based on the content of the retrieved abstracts;
 
-The sidebar contains clickable options:
+-   a block of research ideas, displayed below the main text.
 
-*   **Research Assistant**: Provides support for full-cycle research queries.
-    
-*   **PDF Analysis**: Offers an advanced pipeline for detailed PDF document analysis.
-    
+The generation of research ideas is the third, but equally important,
+step. The system automatically proposes directions to help the user
+refine or expand their topic. Even if few relevant articles are found or
+the response is too generic, these suggestions offer additional depth.
 
-> **Navigation Tip:** Use the sidebar to quickly switch between modes depending on your current research needs.
+The proposed ideas are based on both the original query and the themes
+of the retrieved publications. They may inspire interdisciplinary
+approaches or help formulate new, more specific questions. Typically,
+three suggestions are provided, focused on practical relevance and
+scientific novelty.
 
-5\. Using the Research Assistant Mode
--------------------------------------
+### 2.2 Working with Query Refinement Enabled
 
-### Overview
+The query refinement mode allows the system to produce more accurate,
+detailed answers tailored to your specific information needs.
 
-The **Research Assistant** mode is designed to:
+To activate it, simply check the Enable refinement mode option in the
+sidebar before launching the initial query. Then, enter your question in
+the query field and click Run Query, just like in the basic mode.
 
-*   Help you generate research queries.
-    
-*   Provide context-aware responses using advanced AI processing.
-    
-*   Support the overall research workflow from hypothesis formation to conclusion.
-    
+After the initial response is generated, an additional block appears --
+Clarification Questions. This block contains follow-up questions
+automatically generated by the language model based on the first
+response.
 
-### Features and Workflow
+The user can read these questions, reflect on what might be missing in
+the answer, and provide additional context or clarification in a new
+text field.
 
-*   **Intelligent Query Processing**: Input your research questions and receive detailed responses enhanced by contextual analysis.
-    
-*   **Semantic Search**: The system uses ChromaDB to retrieve relevant documents and insights.
-    
-*   **Multi-Stage Analysis**: Incorporates chain-of-thought reasoning to provide nuanced and comprehensive answers.
-    
+When the Get Refined Answer button is pressed, the system reruns the
+query, combining the original and refined inputs, and produces an
+updated response that incorporates the extended context.
 
-### Step-by-Step Instructions
+As before, a new set of research suggestions appears below the refined
+response. This flexible approach is particularly useful for deeper
+exploration of complex or interdisciplinary topics.
 
-1.  **Select Research Assistant Mode**: Click the corresponding option in the sidebar.
-    
-2.  **Enter Your Query**: Use the provided text box to input your research question.
-    
-3.  **Submit the Query**: Click the "Submit" or "Analyze" button.
-    
-4.  **Review the Response**: The system displays a detailed answer with links to relevant documents and contextual explanations.
-    
-5.  **Iterate if Necessary**: Refine your question or explore related topics using additional queries.
-    
+## 3 Single PDF Mode Page
 
-> **Hint:** Use clear and specific questions to maximize the accuracy of the response.
+This page enables detailed analysis of a specific PDF document. You can
+upload any scientific publication in PDF format, and the system will
+automatically perform all necessary steps: store it in MongoDB, convert
+it to Markdown, split it into chunks, generate vector embeddings, and
+update the vector index. After processing, you can ask any question
+about the document's content and receive an answer based on the most
+relevant text segments.
 
-6\. Using the PDF Analysis Mode
--------------------------------
+The sidebar displays connection statuses for the database and OpenAI
+API. In addition, the Document Upload section provides a field for
+uploading a PDF file. Once a file is selected, it is stored temporarily,
+and the Process PDF button becomes available to start the analysis.
 
-### Overview
+After successful upload and processing of the PDF file, you can ask
+questions about its content and click Run Query to initiate the
+generation.
 
-The **PDF Analysis** mode is optimized for deep analysis of scientific documents:
+The system performs a multi-step reasoning process known as
+Chain-of-Thought.
 
-*   Upload and process PDFs.
-    
-*   Extract key insights, summaries, and detailed annotations.
-    
-*   Utilize LangChain to perform multi-stage document processing.
-    
+During this process:
 
-### Features and Workflow
+-   The system generates a list of clarification questions based on your
+    initial query;
 
-*   **Deep Document Parsing**: Breaks down complex PDFs into manageable sections.
-    
-*   **Semantic Extraction**: Identifies key terms, figures, and arguments using advanced language models.
-    
-*   **Context-Aware Analysis**: Provides insights that are linked to relevant sections within the document.
-    
-*   **Visual Summaries**: Generates summaries and possibly visual representations (charts, annotated excerpts) to enhance understanding.
-    
+-   Each question is answered in turn, refining key aspects of the
+    topic;
 
-### Step-by-Step Instructions
+-   Once all steps are complete, the answers are combined and analyzed;
 
-1.  **Select PDF Analysis Mode**: Navigate via the sidebar.
-    
-2.  **Upload Your Document**: Use the file upload widget to select a PDF from your local system.
-    
-3.  **Configure Analysis Settings** (if available): Adjust options such as depth of analysis, summary length, etc.
-    
-4.  **Start Analysis**: Click the “Analyze” button to begin processing.
-    
-5.  **Review Results**: Once processed, results will include detailed annotations, summaries, and extracted insights.
-    
-6.  **Download or Export**: Save the analysis report or export data for further use.
-    
+-   Based on the intermediate reasoning, the system produces a final,
+    comprehensive answer that best reflects the essence of the original
+    query.
 
-> **Tip:** For optimal results, ensure your PDFs are of high quality and contain clearly formatted text.
+Each reasoning step is displayed separately (e.g., Step 1, Step 2,
+etc.), allowing you to trace the logic of the model's thinking.
 
-7\. Troubleshooting and FAQs
-----------------------------
+This approach helps the model better understand the document's content,
+reduces the likelihood of incorrect conclusions, and makes the
+generation process more transparent to the user.
 
-### Common Issues
+The final answer is displayed at the end in a dedicated block labeled
+Final Answer.
 
-*   **Ollama LLM Server Not Running**:Ensure the server is active. Check your system logs or terminal for error messages.
-    
-*   **ChromaDB Connection Errors**:Verify your configuration and network connection. Ensure your vector database is properly set up.
-    
-*   **Slow Response or Timeout**:This may occur with very large documents or complex queries. Try breaking your query into smaller parts or optimizing document quality.
-    
+## 4 Multi-PDF Mode Page
 
-### Frequently Asked Questions
+This page works similarly to the Single PDF Mode described in section
+4.3 but allows users to analyze multiple PDF documents simultaneously.
 
-1.  **How do I update my dependencies?**Use pip install --upgrade -r requirements.txt to update your packages.
-    
-2.  **Can I use the system remotely?**The system is designed for local deployment; however, you can configure a remote server if required, following security best practices.
-    
-3.  **How do I get support?**Refer to the [Support and Contact](#support-and-contact) section below.
-    
-4.  **Is there a limit to the document size?**Very large documents might require additional processing time. It’s recommended to use well-formatted, high-quality PDFs.
-    
+In Multi-PDF Mode, the Chain-of-Thought process is modified to take into
+account information from multiple sources.
 
-8\. Support and Contact
------------------------
+This mode is a convenient tool for simultaneously reviewing multiple
+publications and identifying their similarities or differences.
 
-If you encounter issues or need further assistance:
+## 5 Help & Guide Page
 
-*   **Documentation**: Refer to the detailed documentation provided within the project repository.
-    
-*   **Community Forums**: Check out our online forums or user groups for additional tips and shared experiences.
-    
-*   **Direct Support**: Contact our support team via support@example.com with your queries or issue reports.
-    
+This mode allows users to ask open-ended questions about system
+functionality, which are answered based on the uploaded user manual. The
+interface is designed for intuitive navigation, manual browsing, and
+interactive assistance.
 
-> **Note:** Include error logs or screenshots when reporting issues to help expedite troubleshooting.
+Users can view the full manual by clicking the Show Manual button, which
+opens an embedded Markdown viewer displaying the structure and contents
+of all system features. By entering a question and clicking Ask, users
+receive a response based on the relevant section of the manual.
+
+The sidebar shows the status of manual ingestion into the vector
+database. A Download Manual button is also available, allowing users to
+save the current version of the guide in Markdown format to their
+device.

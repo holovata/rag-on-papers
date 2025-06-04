@@ -1,71 +1,50 @@
 pipeline:
-  - stage: query_refinement
-    function: refine_query
-    parameters:
-      query: "{{user_query}}"
-    cot_template: |
-      Analyzing and refining the original query: "{query}"
-    prompt_template: |
-      Given the user query: "{query}",
-      please rephrase it into a clearer, more formal question.
-      
-      Return ONLY a valid JSON object with the following structure:
-      {{
-          "refined_query": "string"
-      }}
-      
-      Example:
-      {{
-          "refined_query": "What are the key installation steps for the software?"
-      }}
-
   - stage: retrieval
     function: get_top_relevant_documents
     parameters:
-      query: "{{refined_query}}"
-      top_n: 3
-      embeddings_folder: "C:\\Work\\diplom2\\rag_on_papers\\data\\user_manual\\embeddings"
+      query: "{{query}}"
+      top_n: 2
     cot_template: |
-      Retrieve the top 3 relevant segments for the refined query "{refined_query}" from the vector store.
+      Retrieving the top 2 relevant segments for the query "{query}".
 
   - stage: qa_over_guide
     function: answer_query_from_guide
     parameters:
-      query: "{{refined_query}}"
+      query: "{{query}}"
     cot_template: |
-      Generate an answer to the refined query "{refined_query}" based on the retrieved guide segments.
+      Generating an answer to "{query}" based on the retrieved guide segments.
     prompt_template: |
       You are an AI assistant tasked with answering user queries using the official documentation provided below.
-      
+
       ############################
       # USER’S QUERY
       ############################
-      {refined_query}
-      
+      {query}
+
       ############################
       # DOCUMENTATION EXCERPTS
       ############################
       {guide_chunks}
-      
+
       ############################
       # INSTRUCTIONS
       ############################
       1. **Objective**: Provide a clear and accurate answer to the user’s query based solely on the provided documentation excerpts.
-      
+
       2. **Answer Requirements**:
          - Begin with a concise, direct answer to the query.
          - Follow with a detailed explanation, referencing specific parts of the documentation where applicable.
          - If the documentation does not contain sufficient information, respond with: "No relevant information found in the guide."
-      
+
       3. **Formatting Guidelines**:
          - Use clear and simple language.
          - Structure your answer in paragraphs.
          - Highlight key steps, instructions, or configurations mentioned in the documentation.
-      
+
       4. **Additional Constraints**:
          - Do not introduce external information beyond the provided excerpts.
          - Ensure that the answer is self-contained and comprehensible without requiring additional context.
-      
+
       ############################
       # FINAL ANSWER
       ############################

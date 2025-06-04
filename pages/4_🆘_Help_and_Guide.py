@@ -1,146 +1,134 @@
 # streamlit: name = 🆘 Help & Guide
-
 import streamlit as st
 import os
 import io
-import contextlib
 import yaml
-from help_protocol import UserGuidePipeline  # Класс обработки протокола из help_protocol.py
+from pathlib import Path
 
-# Абсолютный путь к файлу руководства
-MANUAL_PATH = r"C:\Work\diplom2\rag_on_papers\data\user_manual\user_manual.md"
-# Путь к YAML-протоколу для QA (retrieval и qa_over_guide)
-PROTOCOL_PATH = r"C:\Work\diplom2\rag_on_papers\help_protocol.yaml"
+from help_protocol import UserGuidePipeline
+from my_utils import check_llm_connection, check_mongo_connection, render_status
 
+# Base directory of the project
+BASE_DIR = Path(__file__).resolve().parents[1]
 
+# Paths to Markdown manual and protocol
+MANUAL_PATH    = BASE_DIR / "data" / "user_manual" / "user_manual.md"
+PROTOCOL_PATH  = BASE_DIR / "help_protocol.yaml"
+
+# -------------------- Helper Functions -------------------- #
 @st.cache_data(show_spinner=False)
-def load_manual(manual_path: str) -> str:
-    """Загружает содержимое Markdown-файла руководства."""
+def load_manual(md_path: Path) -> str:
+    """
+    Loads the manual markdown content as plain text.
+    """
     try:
-        with open(manual_path, "r", encoding="utf-8") as f:
-            return f.read()
+        return md_path.read_text(encoding="utf-8")
     except Exception as e:
         st.error(f"Error loading manual: {e}")
         return ""
 
-
-def load_protocol_stages() -> list:
-    """Извлекает список этапов из YAML-протокола."""
+@st.cache_data(show_spinner=False)
+def load_protocol_stages() -> list[str]:
+    """
+    Reads the YAML protocol and returns all stage names.
+    """
     try:
-        with open(PROTOCOL_PATH, "r", encoding="utf-8") as f:
-            protocol = yaml.safe_load(f)
-        stages = [step["stage"] for step in protocol["pipeline"]]
-        return stages
+        with open(PROTOCOL_PATH, encoding="utf-8") as f:
+            proto = yaml.safe_load(f)
+        return [s["stage"] for s in proto["pipeline"]]
     except Exception as e:
         st.error(f"Error loading protocol: {e}")
         return []
 
-
-# Словарь для отображения понятных пользователю надписей для этапов
 STAGE_LABELS = {
-    "query_refinement": "Query refinement",
-    "retrieval": "Retrieval of relevant information",
+    "retrieval":     "Retrieval of relevant information",
     "qa_over_guide": "Final answer generation",
-    "done": "Completed"
+    "done":          "Completed",
 }
 
-
-def initialize_pipeline():
-    """Инициализирует объект UserGuidePipeline и сохраняет его в session_state."""
-    if 'user_guide_pipeline' not in st.session_state:
+def initialize_pipeline() -> UserGuidePipeline:
+    """
+    Initializes the UserGuidePipeline instance stored in session state.
+    """
+    if "user_guide_pipeline" not in st.session_state:
         st.session_state.user_guide_pipeline = UserGuidePipeline(PROTOCOL_PATH)
     return st.session_state.user_guide_pipeline
 
-
-def process_query_with_indicators(query: str) -> (str, str):
+def process_query_with_stream(query: str):
     """
-    Processes the query using the pipeline and updates visual indicators for each stage.
-    Intermediate results are not displayed, only stage statuses, while logs are saved.
+    Executes the guide-question pipeline with streaming LLM output.
     """
     if not query.strip():
         st.warning("Please enter a valid question")
-        return "", ""
+        return
 
     pipeline = initialize_pipeline()
     stages = load_protocol_stages()
 
-    # Create a container for stage indicators
+    # Create progress indicators
     stage_container = st.container()
-    indicators = {}
-    for stage in stages:
-        user_label = STAGE_LABELS.get(stage, stage)
-        # Initially, all stages are marked as "Waiting..."
-        indicators[stage] = stage_container.empty()
-        indicators[stage].markdown(f"⏳ **{user_label}**: Waiting...")
+    indicators = {s: stage_container.empty() for s in stages}
+    for s, box in indicators.items():
+        box.markdown(f"⏳ **{STAGE_LABELS.get(s, s)}**: Waiting...")
 
-    # Capture standard output for logs
-    debug_buffer = io.StringIO()
     final_answer = ""
+    answer_container = st.container()
 
-    with contextlib.redirect_stdout(debug_buffer):
-        for stage, context in pipeline.run_pipeline(query):
-            user_label = STAGE_LABELS.get(stage, stage)
-            # Update indicator for the current stage
-            if stage in indicators:
-                # If the stage has just started, show "In progress..."
-                indicators[stage].markdown(f"🚀 **{user_label}**: In progress...")
-            # If this is the answer generation stage, save the final answer
-            if stage == "qa_over_guide":
-                if "answer_query_from_guide_output" in context:
-                    final_answer = context["answer_query_from_guide_output"]
-                elif "final_answer" in context:
-                    final_answer = context["final_answer"]
-            # After each step, immediately update the current stage status as "Completed"
-            if stage in indicators:
-                indicators[stage].markdown(f"✅ **{user_label}**: Completed")
+    for stage, ctx in pipeline.run_pipeline(query):
+        lbl = STAGE_LABELS.get(stage, stage)
+        if stage in indicators:
+            indicators[stage].markdown(f"🚀 **{lbl}**: In progress...")
 
-    logs = debug_buffer.getvalue()
-    st.session_state['protocol_output'] = logs
-    return final_answer, logs
+        if stage == "qa_over_guide" and "streamed_response" in ctx:
+            # Stream and display the model's output
+            answer_container.empty()
+            acc_text = ""
+            text_display = answer_container.empty()
 
+            for chunk in ctx["streamed_response"]:
+                acc_text += chunk.content
+                text_display.text(acc_text)
 
-def main():
-    st.set_page_config(
-        page_title="Smart User Guide",
-        page_icon="📚",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    st.title("🆘 Help & Guide")
-    st.markdown("Ask questions about our documentation using the AI-powered guide assistant.")
+            final_answer = acc_text
 
-    # Sidebar: настройки и скачивание руководства
-    with st.sidebar:
-        st.header("📘 Manual Info")
-        manual_content = load_manual(MANUAL_PATH)
-        if manual_content:
-            st.success("Manual loaded successfully")
-        else:
-            st.error("Manual file missing")
+        if stage in indicators:
+            indicators[stage].markdown(f"✅ **{lbl}**: Completed")
+
+    return final_answer
+
+# -------------------- Streamlit Page -------------------- #
+st.set_page_config(page_title="Smart User Guide", page_icon="📚", layout="wide")
+
+st.title("🆘 Help & Guide")
+st.markdown("Ask questions about our documentation using the AI-powered guide assistant.")
+
+# Sidebar information
+with st.sidebar:
+    st.header("⚙️ Info")
+    render_status("MongoDB", check_mongo_connection())      # 🟢 / 🔴
+    render_status("OpenAI API", check_llm_connection())     # 🟢 / 🔴
+
+    st.header("📘 Manual Info")
+    try:
+        md_bytes = MANUAL_PATH.read_bytes()
         st.download_button(
-            label="Download Manual",
-            data=manual_content,
+            "📥 Download Manual",
+            data=md_bytes,
             file_name="user_manual.md",
             mime="text/markdown"
         )
-    # Основной контент: содержимое руководства спрятано в экспандере (по умолчанию свернуто)
-    with st.expander("Show Manual", expanded=False):
-        manual_content = load_manual(MANUAL_PATH)
-        if manual_content:
-            st.markdown(manual_content, unsafe_allow_html=True)
-        else:
-            st.warning("Manual content not available.")
+        st.success("Manual loaded successfully")
+    except Exception as e:
+        st.error(f"Manual file not found: {e}")
 
-    # Раздел для вопросов
-    st.subheader("Ask a question about the guide")
-    query = st.text_input("Your question:", placeholder="Type your question here...")
-    if st.button("Ask"):
-        final_answer, logs = process_query_with_indicators(query)
-        st.markdown("### Final Answer:")
-        st.write(final_answer)
-        with st.expander("Show Debug Logs"):
-            st.code(logs, language="log")
+# Manual preview (Markdown only)
+with st.expander("Show Manual", expanded=False):
+    manual_text = load_manual(MANUAL_PATH)
+    st.markdown(manual_text, unsafe_allow_html=True)
 
+# User query input
+st.subheader("Ask a question about the guide")
+user_q = st.text_input("Your question:", placeholder="Type your question here…")
 
-if __name__ == "__main__":
-    main()
+if st.button("❓ Ask"):
+    process_query_with_stream(user_q)
