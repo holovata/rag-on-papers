@@ -45,6 +45,7 @@ def get_relevant_chunks(
     top_n: int = DEFAULT_TOP_K,
     min_similarity: float = MIN_SIMILARITY,
     num_candidates: int = NUM_CANDIDATES,
+    db_name: str = "file_buffer_db",
     chunk_collection: str = CHUNK_COL,              # Новый аргумент
     chunk_index_name: str = CHNK_INDEX              # Новый аргумент
 ) -> list[Document]:
@@ -76,7 +77,7 @@ def get_relevant_chunks(
     ]
 
     client = mongo_client()
-    db = client[DB_NAME]
+    db = client[db_name]
     coll = db[chunk_collection]  # теперь можно передавать нужную коллекцию
 
     try:

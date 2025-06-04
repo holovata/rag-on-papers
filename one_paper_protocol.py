@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PDFAnalysisPipeline с OpenAI и стриминговым выводом, где тексты промптов хранятся в YAML.
+PDFAnalysisPipeline with separate upload_and_vectorize and query methods:
 
-Шаги:
- 1) Берёт очищенный Markdown из GridFS (file_buffer_db → filename_clean.md).
- 2) Переиспользует ingest_from_gridfs из papers_vectorization_MONGO
-    (очищает paper_chunks, разбивает MD на чанки и сохраняет эмбеддинги OpenAI).
- 3) Переиспользует build_vector_index из papers_vectorization_MONGO для создания/обновления векторного индекса.
- 4) Для ретривала использует get_relevant_chunks из papers_retrieval_MONGO.
- 5) Генеративные этапы (retrieval_prompt, reasoning, qa_over_pdf) читают “action” из YAML
-    и используют ChatOpenAI.stream для стриминга ответа.
- 6) Все промежуточные шаги reasoning выводятся на экран.
+1) upload_and_vectorize_pdf(pdf_path):
+   - Clears default GridFS in file_buffer_db.
+   - Saves the PDF to GridFS.
+   - Converts PDF → raw Markdown, removes tables → clean Markdown.
+   - Saves clean Markdown to GridFS.
+   - Ingests all *_clean.md files from GridFS into file_buffer_db.paper_chunks.
+   - Rebuilds the vector index on paper_chunks.
+
+2) run_query_with_progress(user_query, progress_callback):
+   - Uses already-vectorized chunks in file_buffer_db.paper_chunks.
+   - Performs retrieval → chain-of-thought reasoning → QA over PDF.
+   - Streams intermediate LLM outputs via ChatOpenAI.
+   - Yields (stage, status, context) for frontend progress tracking.
 """
 
 import os
@@ -26,15 +30,21 @@ from pymongo.server_api import ServerApi
 
 from langchain_openai import ChatOpenAI
 
-# Переиспользуемые функции
 from src.retrieval.papers_retrieval_MONGO import get_relevant_chunks
-from src.data_processing.papers_vectorization_MONGO import clear_all_before_ingest, mongo_client
+from src.data_processing.papers_vectorization_MONGO import (
+    ingest_from_gridfs,
+    build_vector_index,
+    mongo_client
+)
+from my_utils import (
+    clear_all_files_from_gridfs,
+    save_pdf_to_gridfs,
+    save_text_to_gridfs,
+    remove_markdown_tables,
+    convert_pdf_to_md
+)
 
 from dotenv import load_dotenv
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Константы / Настройки
-# ──────────────────────────────────────────────────────────────────────────────
 
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -42,77 +52,32 @@ if not MONGODB_URI:
     print("✘ MONGODB_URI not set in environment (.env)", file=sys.stderr)
     sys.exit(1)
 
-ARXIV_DB_NAME    = "arxiv_db"
-CHUNKS_COLL_NAME = "paper_chunks"
-GRIDFS_DB_NAME   = "file_buffer_db"
+# Database and collection constants
+ARXIV_DB_NAME     = "arxiv_db"
+PAPER_CHUNK_COL   = "paper_chunks"
+FILE_BUFFER_DB    = "file_buffer_db"
+VECTOR_INDEX_NAME = "chunk_embedding_index"
 
-# Имя векторного индекса (совпадает с CHNK_INDEX из papers_vectorization_MONGO)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Вспомогательная функция: получить путь к очищенному MD из GridFS
-# ──────────────────────────────────────────────────────────────────────────────
-
-def fetch_clean_markdown_from_gridfs(pdf_path: str) -> str:
-    """
-    Ищет в GridFS (file_buffer_db) файл "<stem>_clean.md", сохраняет локально
-    во временную папку и возвращает путь. Если не найден, возвращает "".
-    """
-    stem = Path(pdf_path).stem
-    clean_filename = f"{stem}_clean.md"
-
-    client = MongoClient(MONGODB_URI, server_api=ServerApi("1"))
-    db = client[GRIDFS_DB_NAME]
-    fs = gridfs.GridFS(db)
-
-    grid_out = fs.find_one({"filename": clean_filename})
-    if not grid_out:
-        print(f"[fetch_clean_markdown] ✘ '{clean_filename}' not found in GridFS.", file=sys.stderr)
-        client.close()
-        return ""
-
-    content_bytes = grid_out.read()
-    client.close()
-
-    tmp_dir = tempfile.mkdtemp(prefix="clean_md_")
-    tmp_path = Path(tmp_dir) / clean_filename
-    try:
-        tmp_path.write_bytes(content_bytes)
-    except Exception as e:
-        print(f"[fetch_clean_markdown] ✘ Cannot write to {tmp_path}: {e}", file=sys.stderr)
-        return ""
-    return str(tmp_path)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# PDFAnalysisPipeline
-# ──────────────────────────────────────────────────────────────────────────────
 
 class PDFAnalysisPipeline:
     def __init__(self, protocol_path: str):
+        """
+        Initialize pipeline with a YAML protocol defining retrieval, reasoning, and QA steps.
+        """
         self.protocol = self._load_protocol(protocol_path)
         self.context = {}
         self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.4)
 
     def _load_protocol(self, path: str) -> dict:
+        """
+        Load the pipeline definition from a YAML file.
+        """
         with open(path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
 
-    def _resolve_parameters(self, params: dict) -> dict:
-        """
-        Подставляет значения из self.context для шаблонов вида "{{var}}".
-        """
-        resolved = {}
-        for k, v in params.items():
-            if isinstance(v, str) and v.startswith("{{") and v.endswith("}}"):
-                key = v[2:-2].strip()
-                resolved[k] = self.context.get(key, "")
-            else:
-                resolved[k] = v
-        return resolved
-
     def _stream_llm(self, prompt: str) -> str:
         """
-        Стримим ответ LLM, печатаем построчно и накапливаем в одну строку.
+        Send a prompt to the LLM and stream the response to stdout, accumulating it into one string.
         """
         streamed = ""
         for chunk in self.llm.stream([("user", prompt)]):
@@ -121,151 +86,223 @@ class PDFAnalysisPipeline:
         print()
         return streamed
 
-    def run_pipeline_with_progress(self, user_query: str, user_pdf: str, progress_callback=None):
+    def upload_and_vectorize_pdf(self, pdf_path: str) -> bool:
         """
-        Итерация по шагам протокола: отдаёт (stage, status, context).
-        Если передан progress_callback, его вызывают в шаге reasoning для каждого CoT-подшага.
+        1) Clear default GridFS (file_buffer_db).
+        2) Save the PDF to GridFS.
+        3) Convert PDF → raw Markdown, remove tables → clean Markdown, save clean Markdown to GridFS.
+        4) Ingest all *_clean.md files from GridFS into file_buffer_db.paper_chunks.
+        5) Rebuild vector index 'chunk_embedding_index' on paper_chunks.
+        Returns True on success, False on any error.
         """
-        self.context.update({"user_query": user_query, "user_pdf": user_pdf})
+        # 1) Clear existing files in default GridFS of file_buffer_db
+        deleted_count = clear_all_files_from_gridfs()
+        print(f"[upload_and_vectorize] Cleared default GridFS: {deleted_count} files removed.")
 
-        for step in self.protocol["pipeline"]:
-            stage  = step["stage"]
-            action = step.get("action", "").strip()
-            print(f"\n>> [{stage}]")  # Заголовок этапа
-            yield stage, "in_progress", dict(self.context)
+        if not os.path.isfile(pdf_path):
+            print(f"✘ PDF not found at: {pdf_path}", file=sys.stderr)
+            return False
 
-            params = self._resolve_parameters(step.get("parameters", {}))
-            self.context.update(params)
+        # Read PDF bytes
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        base_name = Path(pdf_path).stem
+        pdf_filename = f"{base_name}.pdf"
+        clean_md_filename = f"{base_name}_clean.md"
 
-            if stage == "retrieval":
-                # Формируем prompt из action: подставляем параметры
-                # prompt = action.format(**self.context)
-                # print(f"-- Prompt for retrieval:\n{prompt}\n")
-                # Здесь не стримим, просто выводим запрос и получаем чанки
-                docs = get_relevant_chunks(self.context["user_query"], top_n=params.get("top_n", 3))
-                self.context["retrieval_output"] = docs
-                print(f"-- Retrieved {len(docs)} chunks.")
+        # 2) Save PDF into GridFS
+        try:
+            pdf_oid = save_pdf_to_gridfs(pdf_bytes, pdf_filename)
+        except Exception as e:
+            print(f"✘ Error saving PDF to GridFS: {e}", file=sys.stderr)
+            return False
+        print(f"[upload_and_vectorize] ✔ PDF saved to GridFS (id={pdf_oid}).")
 
-            elif stage == "reasoning":
-                # Берём шаблон prompt из action
-                # base_prompt = action.format(**self.context)
-                # print(f"-- Prompt for reasoning:\n{base_prompt}\n")
+        # 3) Convert PDF → raw Markdown, then remove tables → clean Markdown
+        tmp_dir = tempfile.mkdtemp(prefix="pdf_to_md_")
+        tmp_pdf_path = os.path.join(tmp_dir, pdf_filename)
+        with open(tmp_pdf_path, "wb") as f_tmp:
+            f_tmp.write(pdf_bytes)
 
-                # Разбиваем на подшага CoT: здесь предполагаем, что action даёт базовый запрос
-                # Мы всё ещё делаем multi-step CoT, но первый шаг – это base_prompt
-                # Шаг 0: initial answer
-                # initial_answer = self._stream_llm(step.get("prompt_template", "").strip())
-                reasoning_steps = []
-                # all_answers = [initial_answer]
-                # if progress_callback:
-                #    progress_callback(0, "Initial Answer", initial_answer)
+        raw_md_path = os.path.join(tmp_dir, f"{base_name}.md")
+        print("[upload_and_vectorize] ⏳ Converting PDF → Markdown …")
+        try:
+            convert_pdf_to_md(tmp_pdf_path, raw_md_path, show_progress=False)
+        except Exception as e:
+            print(f"✘ convert_pdf_to_md failed: {e}", file=sys.stderr)
+            return False
+        print(f"[upload_and_vectorize] ✔ Markdown saved locally: {raw_md_path}")
 
-                # ───── внутри run_pipeline_with_progress ─────
-                for step in self.protocol["pipeline"]:
-                    stage = step["stage"]
-                    prompt = step.get("prompt_template", "").strip()  # вместо action
-                    cot_qs = step.get("cot_questions")  # список вопросов, если есть
-                    ...
-                    # — retrieval —
-                    '''if stage == "retrieval":
-                        print(prompt.format(**self.context), "\n")
-                        docs = get_relevant_chunks(...)'''
+        clean_md_path = os.path.join(tmp_dir, clean_md_filename)
+        print("[upload_and_vectorize] ⏳ Removing tables from Markdown …")
+        try:
+            remove_markdown_tables(raw_md_path, clean_md_path)
+        except Exception as e:
+            print(f"✘ remove_markdown_tables failed: {e}", file=sys.stderr)
+            return False
+        print(f"[upload_and_vectorize] ✔ Clean Markdown saved locally: {clean_md_path}")
 
-                    # — reasoning —
-                    if stage == "reasoning":
-                        base_prompt = prompt.format(**self.context)
-                        print("-- Prompt for reasoning:\n", base_prompt, "\n")
+        # 4) Save clean Markdown into GridFS
+        with open(clean_md_path, "r", encoding="utf-8") as f_clean:
+            clean_md_text = f_clean.read()
+        try:
+            clean_md_oid = save_text_to_gridfs(clean_md_text, clean_md_filename)
+        except Exception as e:
+            print(f"✘ Error saving clean Markdown to GridFS: {e}", file=sys.stderr)
+            return False
+        print(f"[upload_and_vectorize] ✔ Clean Markdown saved to GridFS (id={clean_md_oid}).")
 
-                        initial_answer = self._stream_llm(base_prompt)
-                        reasoning_steps, all_answers = [], [initial_answer]
+        # 5) Remove temporary files and directory
+        try:
+            os.remove(raw_md_path)
+            os.remove(clean_md_path)
+            os.remove(tmp_pdf_path)
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
+        print(f"[upload_and_vectorize] ✔ Temporary files removed: {tmp_dir}")
 
-                        questions = cot_qs or [  # если в YAML нет списка – дефолт
-                            "Identify potential weaknesses or gaps in your answer.",
-                            "How can you address those gaps?",
-                            "What extra details would improve your answer?",
-                            "Does your answer fully align with the query?",
-                            "How confident are you, and what would increase confidence?",
-                            "Summarize an improved final answer."
-                        ]
+        # 6) Ingest all *_clean.md from GridFS → file_buffer_db.paper_chunks
+        print("[upload_and_vectorize] ⏳ Clearing and vectorizing clean Markdown into paper_chunks …")
+        client = mongo_client()
+        db_buffer = client[FILE_BUFFER_DB]
+        ingest_from_gridfs(db_buffer)
+        print("[upload_and_vectorize] ✔ All clean Markdown chunks vectorized and stored.")
 
-                        context_chunks = "\n".join(
-                            f"Chunk {i + 1}: {ch.page_content}"
-                            for i, ch in enumerate(self.context.get("retrieval_output", [])[:5])
-                        )
+        # 7) Rebuild vector index on paper_chunks in file_buffer_db
+        print(f"[upload_and_vectorize] ⏳ Building vector index '{VECTOR_INDEX_NAME}' …")
+        build_vector_index(db_buffer, PAPER_CHUNK_COL, VECTOR_INDEX_NAME)
+        print(f"[upload_and_vectorize] ✔ Vector index '{VECTOR_INDEX_NAME}' is ready.")
 
-                        for i, question in enumerate(questions, 1):
-                            prev = "\n".join(f"Answer {j + 1}: {ans}"
-                                             for j, ans in enumerate(all_answers))
-                            iteration_prompt = f"""Iteration {i}:
-                Query: {self.context['user_query']}
+        client.close()
+        return True
 
-                Context:
-                {context_chunks}
+    def run_query_with_progress(self, user_query: str, progress_callback=None):
+        """
+        Perform retrieval → reasoning → qa_over_pdf using already-vectorized chunks.
+        Yields (stage, status, context) for UI progress.
+        """
+        # Store the query in context
+        self.context["user_query"] = user_query
 
-                Previous Answers:
-                {prev}
+        # 1) Retrieval
+        print("\n>> [retrieval]")
+        yield "retrieval", "in_progress", dict(self.context)
 
-                Refinement Question: {question}
+        docs = get_relevant_chunks(
+            query=user_query,
+            top_n=self.protocol["pipeline"][0].get("parameters", {}).get("top_n", 3),
+            db_name=FILE_BUFFER_DB,
+            chunk_collection=PAPER_CHUNK_COL,
+            chunk_index_name=VECTOR_INDEX_NAME
+        )
+        self.context["retrieval_output"] = docs
 
-                Please refine your response."""
-                            analysis = self._stream_llm(iteration_prompt)
-                            reasoning_steps.append({"step": question,
-                                                    "analysis": analysis,
-                                                    "iteration": i})
-                            all_answers.append(analysis)
-                            if progress_callback:
-                                progress_callback(i, question, analysis)
+        print(f"-- Retrieved {len(docs)} chunks:")
+        for i, ch in enumerate(docs, 1):
+            print(f"\n--- Chunk {i} ---")
+            print(ch.page_content.strip())
+            print("---------------------")
 
-                final_answer = all_answers[-1]
-                if progress_callback:
-                    progress_callback(0, "CoT Complete", final_answer)
+        yield "retrieval", "done", dict(self.context)
 
-                self.context.update({
-                    "initial_answer":   initial_answer,
-                    "reasoning_steps":  reasoning_steps,
-                    "final_answer":     final_answer
+        # 2) Reasoning (chain-of-thought)
+        reasoning_step = next((s for s in self.protocol["pipeline"] if s["stage"] == "reasoning"), None)
+        if reasoning_step:
+            print("\n>> [reasoning]")
+            yield "reasoning", "in_progress", dict(self.context)
+
+            prompt_template = reasoning_step.get("prompt_template", "").strip()
+            base_prompt = prompt_template.format(**self.context)
+            print(f"-- Prompt for reasoning:\n{base_prompt}\n")
+
+            # Initial answer from LLM
+            initial_answer = self._stream_llm(base_prompt)
+            reasoning_steps = []
+            all_answers = [initial_answer]
+            if progress_callback:
+                progress_callback(0, "Initial Answer", initial_answer)
+
+            cot_qs = reasoning_step.get("cot_questions")
+            questions = cot_qs or [
+                "Identify potential weaknesses or gaps in your answer.",
+                "How can you address those weaknesses?",
+                "What additional details would improve your answer?",
+                "Does your answer fully address the query?",
+                "How confident are you, and what would increase confidence?",
+                "Summarize an improved final answer."
+            ]
+
+            # Prepare up to 5 retrieved chunks for context
+            context_chunks = "\n".join(
+                f"Chunk {i+1}: {ch.page_content}"
+                for i, ch in enumerate(self.context.get("retrieval_output", [])[:5])
+            )
+
+            # Iterate over CoT refinement questions
+            for i, question in enumerate(questions, 1):
+                prev_answers = "\n".join(f"Answer {j+1}: {ans}" for j, ans in enumerate(all_answers))
+                iteration_prompt = (
+                    f"Iteration {i}:\n"
+                    f"Query: {self.context['user_query']}\n\n"
+                    f"Context:\n{context_chunks}\n\n"
+                    f"Previous Answers:\n{prev_answers}\n\n"
+                    f"Refinement Question: {question}\n\n"
+                    f"Please refine your response."
+                )
+                analysis = self._stream_llm(iteration_prompt)
+                reasoning_steps.append({
+                    "step": question,
+                    "analysis": analysis,
+                    "iteration": i
                 })
+                all_answers.append(analysis)
+                if progress_callback:
+                    progress_callback(i, question, analysis)
 
-            elif stage == "qa_over_pdf":
-                prompt = action.format(**self.context)
-                print(f"-- Prompt for QA:\n{prompt}\n")
-                answer = self._stream_llm(prompt)
-                self.context["qa_over_pdf_output"] = answer
+            # Final answer is the last refinement
+            final_answer = all_answers[-1]
+            if progress_callback:
+                progress_callback(0, "CoT Complete", final_answer)
 
-            else:
-                func = getattr(self, step["function"], None)
-                if func:
-                    output = func(**params)
-                    self.context[f"{step['function']}_output"] = output
-                else:
-                    print(f"[ERROR] Function '{step['function']}' not found", file=sys.stderr)
-                    yield stage, "error", dict(self.context)
-                    continue
+            self.context.update({
+                "initial_answer":  initial_answer,
+                "reasoning_steps": reasoning_steps,
+                "final_answer":    final_answer
+            })
 
-            yield stage, "done", dict(self.context)
+            yield "reasoning", "done", dict(self.context)
 
+        # 3) QA Over PDF
+        qa_step = next((s for s in self.protocol["pipeline"] if s["stage"] == "qa_over_pdf"), None)
+        if qa_step:
+            print("\n>> [qa_over_pdf]")
+            yield "qa_over_pdf", "in_progress", dict(self.context)
+
+            prompt_text = qa_step.get("action", "").format(**self.context)
+            print(f"-- Prompt for QA:\n{prompt_text}\n")
+            answer = self._stream_llm(prompt_text)
+            self.context["qa_over_pdf_output"] = answer
+
+            yield "qa_over_pdf", "done", dict(self.context)
+
+        # Final pipeline complete
         yield "pipeline_complete", "", dict(self.context)
 
-    def run_pipeline(self, *args, **kwargs) -> dict:
-        for _ in self.run_pipeline_with_progress(*args, **kwargs):
-            pass
-        return self.context
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Точка входа
-# ──────────────────────────────────────────────────────────────────────────────
-
+# Entry point for command-line usage: full upload+query in one run
 if __name__ == "__main__":
     protocol_file = "one_paper_protocol.yaml"
     pipeline = PDFAnalysisPipeline(protocol_file)
 
-    FILE_BUFFER_DB = "file_buffer_db"  # БД-буфер для GridFS
-    client = mongo_client()
-    db_buffer  = client[FILE_BUFFER_DB]
-
-    clear_all_before_ingest(db_buffer)
+    # 1) Upload and vectorize PDF
     user_pdf = input("Enter path to PDF: ").strip()
+    ok = pipeline.upload_and_vectorize_pdf(user_pdf)
+    if not ok:
+        print("🚨 upload_and_vectorize_pdf failed.", file=sys.stderr)
+        sys.exit(1)
+
+    # 2) Run query interactively
     user_query = input("Enter your query: ").strip()
 
     def progress_callback(step_num, question, analysis):
@@ -273,7 +310,7 @@ if __name__ == "__main__":
         print(analysis)
         print("----------------------------\n")
 
-    for stage, status, ctx in pipeline.run_pipeline_with_progress(user_query, user_pdf, progress_callback):
+    for stage, status, ctx in pipeline.run_query_with_progress(user_query, progress_callback):
         print(f"[{stage}] {status}")
 
     final = pipeline.context.get("final_answer")

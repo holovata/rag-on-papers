@@ -1,163 +1,178 @@
 # streamlit: name = 📄 Single PDF Mode
-
 import streamlit as st
-import os
-import tempfile
-from pathlib import Path
+import os, tempfile, io, contextlib
 
-from my_utils import process_pdf_via_console, check_llm_connection, check_mongo_connection_pdfs, render_status
+from my_utils import (
+    check_llm_connection, check_mongo_connection_pdfs, render_status
+)
+from one_paper_protocol import PDFAnalysisPipeline   # <-- новая версия pipeline
 
-from src.data_processing.papers_vectorization_MONGO import ingest_from_gridfs, build_vector_index
-from one_paper_protocol import PDFAnalysisPipeline
-
-
+# ───────────────────────── Session helpers ─────────────────────────
 def init_session():
     page_id = "PDF"
-    session_defaults = {
-        f'uploaded_file_{page_id}': None,
-        f'query_{page_id}': "",
-        f'processing_complete_{page_id}': False,
-        f'protocol_output_{page_id}': ""
+    defaults = {
+        f"uploaded_file_{page_id}": None,
+        f"processing_complete_{page_id}": False,
+        f"log_buffer_{page_id}": io.StringIO(),    # храним вывод upload+query
     }
-    for key, value in session_defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-# Показываем логи CoT-этапов
-def progress_update(step_number, question, analysis):
+
+def append_log(text: str, page_id="PDF"):
+    st.session_state[f"log_buffer_{page_id}"].write(text)
+
+
+def progress_update(step_number, question, analysis, page_id="PDF"):
+    """
+    Показывает рассуждения Chain-of-Thought.
+    Последний агрегирующий шаг («CoT Complete») выводим только в лог.
+    """
+    # не раскрываем финальный шаг
     if step_number == 0 and question == "CoT Complete":
-        st.success("Chain-of-Thought reasoning completed.")
-    else:
-        with st.expander(f"Step {step_number}: {question}"):
-            st.markdown(analysis)
+        append_log(f"\n--- {question} ---\n{analysis}\n", page_id)
+        return
 
+    header = f"Step {step_number}: {question}"
+    with st.expander(header):
+        st.markdown(analysis)
+
+    append_log(f"\n--- {header} ---\n{analysis}\n", page_id)
+
+
+
+# ───────────────────────── Main App ─────────────────────────
 def main():
     page_id = "PDF"
     init_session()
+
     st.set_page_config(page_title="PDF Analysis", layout="wide")
     st.title("📄 Single PDF Document Analysis")
 
-    # Sidebar: загрузка PDF
+    # ───────────── Sidebar ─────────────
     with st.sidebar:
         st.header("📝 Document Upload")
-        uploaded_file = st.file_uploader("Upload one PDF file", type=["pdf"], accept_multiple_files=False)
-        st.session_state[f'uploaded_file_{page_id}'] = uploaded_file
+        uploaded_file = st.file_uploader(
+            "Upload one PDF file",
+            type=["pdf"],
+            accept_multiple_files=False,
+            key="pdf_upload"
+        )
+        st.session_state[f"uploaded_file_{page_id}"] = uploaded_file
 
         st.header("⚙️ Info")
         render_status("MongoDB", check_mongo_connection_pdfs())
         render_status("OpenAI API", check_llm_connection())
 
-    # Шаг 1: Сохранить PDF в GridFS, конвертировать, векторизовать и индексировать
+    # ───────────── Step 1: Process PDF ─────────────
     st.subheader("Step 1: Upload & Process PDF")
-    st.markdown("Upload a PDF, and it will be automatically saved to MongoDB (GridFS), "
-                "converted to Markdown, split into chunks, embedded, and the vector index will be updated.")
+    st.markdown(
+        "Upload a PDF file to begin. The system will automatically prepare the document for analysis by converting it into a readable format and indexing its content for fast search."    )
 
     if st.button("🗂 Process PDF"):
-        if not st.session_state[f'uploaded_file_{page_id}']:
-            st.warning("Please upload a PDF file first.")
+        pdf = st.session_state[f"uploaded_file_{page_id}"]
+        if pdf is None:
+            st.warning("Please upload exactly one PDF first.")
         else:
-            # Сохраняем загруженный файл во временный локальный путь
-            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-            try:
-                tmp.write(st.session_state[f'uploaded_file_{page_id}'].getbuffer())
-                tmp.flush()
-                tmp_path = tmp.name
-            finally:
-                tmp.close()
+            # сохраняем во временный файл
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            tmp.write(pdf.getbuffer())
+            tmp.flush()
+            tmp_path = tmp.name
+            tmp.close()
 
-            st.session_state[f'processing_complete_{page_id}'] = False
-            with st.spinner("Processing PDF—saving to GridFS, converting, ingesting…"):
-                try:
-                    # 1) Сохраняем PDF → GridFS, генерируем MD и чистый MD → GridFS
-                    process_pdf_via_console(tmp_path)
+            pipeline = PDFAnalysisPipeline("one_paper_protocol.yaml")
 
-                    # 2) Извлекаем clean.md из GridFS, разбиваем на чанки, сохраняем в paper_chunks
-                    client = ingest_from_gridfs.__globals__['mongo_client']()
-                    db = client["arxiv_db"]
-                    ingest_from_gridfs(db)
+            # перехватываем stdout, чтобы показать логи во время работы
+            out_buf = st.session_state[f"log_buffer_{page_id}"] = io.StringIO()
+            with contextlib.redirect_stdout(out_buf):
+                with st.spinner("Uploading & vectorizing…"):
+                    ok = pipeline.upload_and_vectorize_pdf(tmp_path)
 
-                    # 3) Обновляем векторный индекс в paper_chunks
-                    build_vector_index(db, "paper_chunks", "chunk_embedding_index")
-                    client.close()
+            os.remove(tmp_path)
 
-                    st.success("PDF processed and indexed successfully!")
-                    st.session_state[f'processing_complete_{page_id}'] = True
+            if ok:
+                st.success("PDF processed and indexed successfully!")
+                st.session_state[f"processing_complete_{page_id}"] = True
+            else:
+                st.error("🚨 Processing failed – check logs below.")
 
-                except Exception as e:
-                    st.error(f"🚨 Failed to process PDF: {e}")
-                finally:
-                    # Удаляем временный файл
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-
-    # Шаг 2: Анализ документа (после успешной обработки)
-    st.subheader("Step 2: Analyze Document")
-    if not st.session_state[f'processing_complete_{page_id}']:
-        st.info("Please complete Step 1 to process the PDF before querying.")
+    # ───────────── Step 2: Ask a question ─────────────
+    st.subheader("Step 2: Ask a question about the document")
+    if not st.session_state[f"processing_complete_{page_id}"]:
+        st.info("Please complete **Step 1** to process the PDF before querying.")
         return
 
-    st.markdown("Enter your query and click “Analyze Document” to get an answer based on the processed document.")
-    st.session_state[f'query_{page_id}'] = st.text_input("Enter your document query:", key="pdf_query")
+    query = st.text_input("Your question:", key="pdf_query")
+    run_btn = st.button("🧠 Run Query", disabled=not query.strip())
 
-    stage_container = st.container()
-    stage_indicators = {}
-    STAGE_LABELS = {
-        "convert_pdf_to_md":            "Load Clean Markdown",
-        "remove_markdown_tables_wrapper":"Skip Table Removal",
-        "chunk_and_vectorize":          "Chunk & Vectorize",
-        "retrieval":                    "Retrieving Relevant Chunks",
-        "reasoning":                    "Chain-of-Thought Reasoning",
-        "qa_over_pdf":                  "Answering Based on Document",
-        "create_index_chunks":          "Indexing Chunks",
-        "pipeline_complete":            "Pipeline Complete"
+    # контейнеры для этапов
+    stage_placeholder = st.container()
+    stage_widgets = {}
+    STAGE_NAMES = {
+        "retrieval": "Retrieving chunks",
+        "reasoning": "Chain-of-Thought reasoning",
+        "qa_over_pdf": "Answering",
+        "pipeline_complete": "Done"
     }
-
-    if st.button("🧠 Run Query"):
-        query = st.session_state[f'query_{page_id}'].strip()
-        if not query:
+    status_retr = st.empty()
+    status_reasoning = st.empty()
+    status_answering = st.empty()
+    if run_btn:
+        if not query.strip():
             st.warning("Please enter a query.")
             return
 
         processor = PDFAnalysisPipeline("one_paper_protocol.yaml")
+        out_buf = st.session_state[f"log_buffer_{page_id}"]
+        out_buf.seek(0);
+        out_buf.truncate(0)
+
         try:
-            with st.spinner("Analyzing document..."):
-                pipeline_steps = processor.run_pipeline_with_progress(
-                    user_query=query,
-                    user_pdf="unused.pdf",  # PDF уже в GridFS; путь не важен
-                    progress_callback=progress_update
-                )
+            with contextlib.redirect_stdout(out_buf):
+                with st.spinner("Running query…"):
+                    steps = processor.run_query_with_progress(
+                        user_query=query,
+                        progress_callback=lambda n, q, a: progress_update(n, q, a, page_id)
+                    )
 
-                for stage, status, context in pipeline_steps:
-                    label = STAGE_LABELS.get(stage, stage)
-                    if stage not in stage_indicators:
-                        stage_indicators[stage] = stage_container.empty()
-                        stage_indicators[stage].markdown(f"⏳ **{label}**: Waiting...")
-                    if status == "in_progress":
-                        stage_indicators[stage].markdown(f"🚀 **{label}**: In progress...")
-                    elif status == "done":
-                        stage_indicators[stage].markdown(f"✅ **{label}**: Completed")
-                    elif status == "error":
-                        stage_indicators[stage].markdown(f"❌ **{label}**: Error")
+                    for stage, status, ctx in steps:
+                        if stage == "retrieval":
+                            if status == "in_progress":
+                                status_retr.markdown("⏳ Retrieving relevant chunks…")
+                            elif status == "done":
+                                status_retr.markdown("✅ Relevant chunks retrieved")
+                            elif status == "error":
+                                status_retr.markdown("❌ Retrieval failed")
 
-            st.divider()
-            final_answer = processor.context.get("final_answer")
-            if final_answer:
-                st.subheader("🎯 Final Answer")
-                st.markdown(final_answer)
+                        elif stage == "reasoning":
+                            if status == "in_progress":
+                                status_reasoning.markdown("⏳ Chain-of-Thought reasoning…")
+                            elif status == "done":
+                                status_reasoning.markdown("✅ Reasoning complete")
+                            elif status == "error":
+                                status_reasoning.markdown("❌ Reasoning failed")
+
+                        elif stage == "qa_over_pdf":
+                            if status == "in_progress":
+                                status_answering.markdown("⏳ Generating answer from document…")
+                            elif status == "done":
+                                status_answering.markdown("✅ Final answer generated")
+                            elif status == "error":
+                                status_answering.markdown("❌ Answering failed")
 
         except Exception as e:
-            st.error(f"🚨 Document analysis failed: {e}")
+            st.error(f"🚨 Query failed: {e}")
+        else:
+            final_txt = (processor.context.get("final_answer")
+                         or processor.context.get("qa_over_pdf_output"))
 
-        finally:
-            st.divider()
-            with st.expander("📜 Execution Logs"):
-                logs = st.session_state.get(f'protocol_output_{page_id}', "")
-                if logs.strip():
-                    st.code(logs, language="log")
-                else:
-                    st.info("No logs available.")
+            if final_txt:
+                st.divider()
+                st.subheader("🎯 Final Answer")
+                st.markdown(final_txt)
+
 
 if __name__ == "__main__":
     main()

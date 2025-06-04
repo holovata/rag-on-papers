@@ -57,6 +57,25 @@ with st.sidebar:
     render_status("OpenAI API", check_llm_connection())
     enable_refinement = st.checkbox("Enable refinement mode", value=False)
 
+# ───── Reset on refinement toggle ─────
+if "prev_enable_refinement" not in st.session_state:
+    st.session_state.prev_enable_refinement = enable_refinement
+
+if st.session_state.prev_enable_refinement != enable_refinement:
+    # Очистити всі пов’язані поля та скинути інтерфейс
+    for key in [
+        "initial_done", "initial_context",
+        "refined_done", "refined_context",
+        "is_generating", "is_refining",
+        "log_initial", "log_refined",
+        "query", "extra"
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.session_state.prev_enable_refinement = enable_refinement
+    st.rerun()
+
+
 query = st.text_input(
     "Enter your research query:",
     key="query",

@@ -5,6 +5,8 @@ import sys
 import tempfile
 import shutil
 import pathlib
+import io
+import contextlib
 import streamlit as st
 
 from functools import lru_cache
@@ -18,27 +20,26 @@ from src.data_processing.pdf_to_md import convert_pdf_to_md
 from src.data_processing.removetables import remove_markdown_tables
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения из .env
-load_dotenv()
+load_dotenv()  # Load environment variables from .env
 
 
-# ---------- Health-check helpers ---------- #
+# ---------- Health-check Helpers ---------- #
 
-@lru_cache  # avoid a full round-trip on every Streamlit rerun
+@lru_cache  # Cache result to avoid re-pinging on every rerun
 def check_mongo_connection() -> str:
     """
-    Ping MongoDB (using MONGODB_URI) and report status.
+    Ping MongoDB using MONGODB_URI and report status.
+    Attempts to count documents in arxiv_db.arxiv_metadata for extra info.
     """
     uri = os.getenv("MONGODB_URI")
     if not uri:
         return "❌ MongoDB: MONGODB_URI not set"
 
     try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=3_000)
+        client = MongoClient(uri, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
         count_msg = ""
         try:
-            # Попытка прочитать коллекцию arxiv_metadata в базе arxiv_db
             count = client["arxiv_db"]["arxiv_metadata"].count_documents({})
             count_msg = f"  •  docs loaded: {count}"
         except Exception:
@@ -49,16 +50,17 @@ def check_mongo_connection() -> str:
     except Exception as e:
         return f"❌ {e}"
 
+
 def check_mongo_connection_pdfs() -> str:
     """
-    Ping MongoDB (using MONGODB_URI) and report status.
+    Ping MongoDB using MONGODB_URI and report status (for PDF pipeline).
     """
     uri = os.getenv("MONGODB_URI")
     if not uri:
         return "❌ MongoDB: MONGODB_URI not set"
 
     try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=3_000)
+        client = MongoClient(uri, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
         return "✅ Connected"
     except ConnectionFailure as ce:
@@ -66,10 +68,11 @@ def check_mongo_connection_pdfs() -> str:
     except Exception as e:
         return f"❌ {e}"
 
+
 @lru_cache
 def check_llm_connection() -> str:
     """
-    One-token round-trip to verify OpenAI (ChatOpenAI) credentials.
+    Perform a minimal round-trip with the ChatOpenAI client to verify OpenAI credentials.
     """
     try:
         _ = ChatOpenAI(model="gpt-4o-mini").invoke("ping")
@@ -79,6 +82,9 @@ def check_llm_connection() -> str:
 
 
 def render_status(label: str, status_msg: str):
+    """
+    Display a status indicator in Streamlit based on status_msg prefix.
+    """
     if status_msg.startswith("✅"):
         st.markdown(f"🟢 **{label}**: {status_msg[2:].strip()}")
     elif status_msg.startswith("❌"):
@@ -87,11 +93,13 @@ def render_status(label: str, status_msg: str):
         st.markdown(f"🟡 **{label}**: {status_msg.strip()}")
 
 
+# ---------- Folder Utilities ---------- #
+
 def clear_folder(folder_path: str, preserve_files: str = None) -> str:
     """
-    Удаляет содержимое папки folder_path, оставляя только файлы из comma-separated строки preserve_files.
-    Если папки нет, создаёт её.
-    Возвращает путь folder_path (или "" при ошибке).
+    Delete all contents of folder_path except for files listed in preserve_files.
+    If the folder does not exist, create it.
+    Returns the path on success, or an empty string on failure.
     """
     preserve_list = []
     if preserve_files:
@@ -117,26 +125,33 @@ def clear_folder(folder_path: str, preserve_files: str = None) -> str:
         return ""
 
 
-
+# ---------- Streamlit Logger ---------- #
 
 class StreamlitLogger:
     """
-    Перехватывает print-выводы и пишет их в st.session_state с ключом protocol_output_{page_id}.
+    Capture print outputs and write them directly into st.session_state
+    under the key 'protocol_output_{page_id}'.
     """
 
-    def __init__(self, page_id):
+    def __init__(self, page_id: str):
         self.original_stdout = sys.stdout
         self.log = ""
         self.page_id = page_id
 
-    def write(self, message):
+    def write(self, message: str):
+        """
+        Append message to both an internal buffer and Streamlit session state.
+        """
         self.log += message
-        key = f'protocol_output_{self.page_id}'
+        key = f"protocol_output_{self.page_id}"
         if key not in st.session_state:
             st.session_state[key] = ""
         st.session_state[key] += message
 
     def flush(self):
+        """
+        No-op to satisfy file-like interface.
+        """
         pass
 
     def __enter__(self):
@@ -147,10 +162,12 @@ class StreamlitLogger:
         sys.stdout = self.original_stdout
 
 
+# ---------- File Upload Helpers ---------- #
+
 def save_uploaded_file(uploaded_file, save_path: str) -> bool:
     """
-    Сохраняет uploaded_file (Streamlit UploadedFile) в save_path.
-    Возвращает True, если успешно, иначе False.
+    Save a Streamlit UploadedFile to a local path.
+    Returns True on success, False on failure.
     """
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -162,35 +179,34 @@ def save_uploaded_file(uploaded_file, save_path: str) -> bool:
         return False
 
 
-# ---------- GridFS helpers ---------- #
+# ---------- GridFS Helpers ---------- #
 
 def get_gridfs_collections():
     """
-    Возвращает (client, db, fs) для GridFS, всегда используя БД 'file_buffer_db',
-    независимо от того, что указано в URI.
+    Return (client, db, fs) for the 'file_buffer_db' database,
+    regardless of which database is specified in the URI.
     """
     uri = os.getenv("MONGODB_URI")
     if not uri:
         raise ValueError("MONGODB_URI not set in environment")
 
     client = MongoClient(uri)
-    db = client["file_buffer_db"]  # ← всегда явно указываем нужную БД
+    db = client["file_buffer_db"]
     fs = gridfs.GridFS(db)
     return client, db, fs
 
 
-
 def check_gridfs_connection() -> str:
     """
-    Пробует подключиться к GridFS и подсчитать, сколько файлов уже сохранено.
-    Возвращает строку статуса.
+    Attempt to connect to GridFS and count stored files.
+    Return a status string.
     """
     uri = os.getenv("MONGODB_URI")
     if not uri:
         return "❌ GridFS: MONGODB_URI not set"
 
     try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=3_000)
+        client = MongoClient(uri, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
         db = client["file_buffer_db"]
         count = db.fs.files.count_documents({})
@@ -201,7 +217,7 @@ def check_gridfs_connection() -> str:
 
 def save_pdf_to_gridfs(pdf_bytes: bytes, filename: str) -> str:
     """
-    Сохраняет PDF (bytes) в GridFS, возвращает строку с ObjectId.
+    Save a PDF (in bytes) into GridFS, returning the ObjectId as a string.
     """
     if not pdf_bytes:
         raise ValueError("No PDF bytes to save")
@@ -212,7 +228,7 @@ def save_pdf_to_gridfs(pdf_bytes: bytes, filename: str) -> str:
 
 def save_text_to_gridfs(text: str, filename: str) -> str:
     """
-    Сохраняет текст (Markdown) в GridFS, возвращает строку с ObjectId.
+    Save text (Markdown) into GridFS, returning the ObjectId as a string.
     """
     if text is None:
         raise ValueError("No text to save")
@@ -220,10 +236,11 @@ def save_text_to_gridfs(text: str, filename: str) -> str:
     file_id = fs.put(text.encode("utf-8"), filename=filename, contentType="text/markdown")
     return str(file_id)
 
+
 def clear_all_files_from_gridfs() -> int:
     """
-    Удаляет все файлы из GridFS (fs.files и fs.chunks).
-    Возвращает количество удалённых файлов.
+    Delete all files from the default GridFS bucket (fs.files and fs.chunks).
+    Return the number of deleted files.
     """
     client, db, fs = get_gridfs_collections()
     files = list(db.fs.files.find({}))
@@ -233,10 +250,11 @@ def clear_all_files_from_gridfs() -> int:
         deleted_count += 1
     return deleted_count
 
+
 def download_all_files_from_gridfs(target_folder="downloaded_from_gridfs") -> int:
     """
-    Скачивает все файлы из GridFS в указанную локальную папку.
-    Возвращает количество загруженных файлов.
+    Download all files from GridFS into a local folder.
+    Return the number of files downloaded.
     """
     client, db, fs = get_gridfs_collections()
     os.makedirs(target_folder, exist_ok=True)
@@ -247,7 +265,6 @@ def download_all_files_from_gridfs(target_folder="downloaded_from_gridfs") -> in
         file_id = file_doc["_id"]
         filename = file_doc.get("filename", f"file_{file_id}.bin")
         local_path = os.path.join(target_folder, filename)
-
         try:
             with open(local_path, "wb") as f_out:
                 f_out.write(fs.get(file_id).read())
@@ -260,24 +277,31 @@ def download_all_files_from_gridfs(target_folder="downloaded_from_gridfs") -> in
     return saved_count
 
 
-# ---------- Console testing (main) ---------- #
+# ---------- Console Testing (Main) ---------- #
 
 def process_pdf_via_console(pdf_path: str):
     """
-    Консольный метод: принимает путь к PDF, выполняет следующие шаги:
-      ...
+    Console utility: given a path to a PDF, perform:
+      1) Clear previous files from GridFS
+      2) Save the original PDF into GridFS
+      3) Convert PDF → Markdown (raw .md file)
+      4) Save raw Markdown into GridFS
+      5) Clean Markdown (remove tables) → save clean .md locally
+      6) Save clean Markdown into GridFS
+      7) Delete temporary files
+      8) Print resulting ObjectIds
     """
     if not os.path.isfile(pdf_path):
-        print(f"❌ Файл не найден: {pdf_path}")
+        print(f"❌ File not found: {pdf_path}")
         return
 
-    # 🔥 Удаляем все старые файлы из GridFS
-    print("🧹 Очищаем GridFS от предыдущих файлов...")
+    # 1) Clear existing files from GridFS
+    print("🧹 Clearing GridFS of previous files...")
     try:
         deleted = clear_all_files_from_gridfs()
-        print(f"   ✔️ Удалено файлов: {deleted}")
+        print(f"   ✔️ Deleted files: {deleted}")
     except Exception as e:
-        print(f"❌ Не удалось очистить GridFS: {e}")
+        print(f"❌ Failed to clear GridFS: {e}")
         return
 
     with open(pdf_path, "rb") as f:
@@ -286,82 +310,84 @@ def process_pdf_via_console(pdf_path: str):
     base_name = pathlib.Path(pdf_path).stem
     orig_filename = f"{base_name}.pdf"
 
-    print("1) Сохраняем оригинальный PDF в GridFS...")
+    # 2) Save original PDF into GridFS
+    print("1) Saving original PDF to GridFS...")
     try:
         pdf_id = save_pdf_to_gridfs(pdf_bytes, orig_filename)
     except Exception as e:
-        print(f"❌ Ошибка при сохранении PDF в GridFS: {e}")
+        print(f"❌ Error saving PDF to GridFS: {e}")
         return
     print(f"   ✔️ PDF saved, id = {pdf_id}")
 
-    # Создаём временную папку
+    # Create a temporary folder for conversion
     tmp_dir = tempfile.mkdtemp(prefix="pdf_to_md_")
     tmp_pdf_path = os.path.join(tmp_dir, orig_filename)
     with open(tmp_pdf_path, "wb") as f_tmp:
         f_tmp.write(pdf_bytes)
-    print(f"   📂 Временный PDF для конвертации: {tmp_pdf_path}")
+    print(f"   📂 Temporary PDF for conversion: {tmp_pdf_path}")
 
-    # Конвертируем PDF → Markdown
+    # 3) Convert PDF → raw Markdown
     tmp_md_path = os.path.join(tmp_dir, f"{base_name}.md")
-    print("2) Конвертируем PDF → Markdown...")
+    print("2) Converting PDF → Markdown...")
     try:
         convert_pdf_to_md(tmp_pdf_path, tmp_md_path, show_progress=False)
     except Exception as e:
-        print(f"❌ Ошибка при конвертации PDF → MD: {e}")
+        print(f"❌ Error converting PDF to MD: {e}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
-    print(f"   ✔️ Markdown сохранён локально: {tmp_md_path}")
+    print(f"   ✔️ Markdown saved locally: {tmp_md_path}")
 
-    # Сохраняем Markdown в GridFS
+    # 4) Save raw Markdown into GridFS
     with open(tmp_md_path, "r", encoding="utf-8") as f_md:
         md_text = f_md.read()
     md_filename = f"{base_name}.md"
-    print("3) Сохраняем Markdown в GridFS...")
+    print("3) Saving Markdown to GridFS...")
     try:
         md_id = save_text_to_gridfs(md_text, md_filename)
     except Exception as e:
-        print(f"❌ Ошибка при сохранении Markdown в GridFS: {e}")
+        print(f"❌ Error saving Markdown to GridFS: {e}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     print(f"   ✔️ Markdown saved, id = {md_id}")
 
-    # «Очищаем» Markdown от таблиц
+    # 5) Clean Markdown by removing tables
     tmp_md_clean_path = os.path.join(tmp_dir, f"{base_name}_clean.md")
-    print("4) Удаляем таблицы из Markdown...")
+    print("4) Removing tables from Markdown...")
     try:
         remove_markdown_tables(tmp_md_path, tmp_md_clean_path)
     except Exception as e:
-        print(f"❌ Ошибка при удалении таблиц из Markdown: {e}")
+        print(f"❌ Error removing tables from Markdown: {e}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
-    print(f"   ✔️ Clean Markdown saved локально: {tmp_md_clean_path}")
+    print(f"   ✔️ Clean Markdown saved locally: {tmp_md_clean_path}")
 
-    # Сохраняем Clean Markdown в GridFS
+    # 6) Save clean Markdown into GridFS
     with open(tmp_md_clean_path, "r", encoding="utf-8") as f_clean:
         clean_md_text = f_clean.read()
     clean_md_filename = f"{base_name}_clean.md"
-    print("5) Сохраняем Clean Markdown в GridFS...")
+    print("5) Saving clean Markdown to GridFS...")
     try:
         clean_md_id = save_text_to_gridfs(clean_md_text, clean_md_filename)
     except Exception as e:
-        print(f"❌ Ошибка при сохранении Clean Markdown в GridFS: {e}")
+        print(f"❌ Error saving clean Markdown to GridFS: {e}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     print(f"   ✔️ Clean Markdown saved, id = {clean_md_id}")
 
-    # Удаляем временную папку
+    # 7) Remove temporary folder
     shutil.rmtree(tmp_dir, ignore_errors=True)
-    print(f"6) Временные файлы удалены: {tmp_dir}")
+    print(f"6) Temporary files removed: {tmp_dir}")
 
-    # Выводим все ID
-    print("\n=== РЕЗУЛЬТАТЫ ===")
-    print(f"• PDF ObjectId:         {pdf_id}")
-    print(f"• Markdown ObjectId:    {md_id}")
+    # 8) Print results
+    print("\n=== RESULTS ===")
+    print(f"• PDF ObjectId:           {pdf_id}")
+    print(f"• Markdown ObjectId:      {md_id}")
     print(f"• Clean Markdown ObjectId: {clean_md_id}")
-    print("=======================")
+    print("========================")
 
 
-# ───── ВСТАВЬТЕ / ЗАМЕНИТЕ "main" В КОНЦЕ  my_utils.py ─────
+# ───── Main Menu for my_utils.py ───── #
+
 def main():
     print("\n=== PDF → GridFS Test Utility ===")
     while True:
@@ -392,7 +418,6 @@ def main():
 
         else:
             print("Invalid option. Please choose 0–4.")
-
 
 
 if __name__ == "__main__":
