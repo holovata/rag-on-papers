@@ -6,7 +6,7 @@ import yaml
 from pathlib import Path
 
 from help_protocol import UserGuidePipeline
-from my_utils import check_llm_connection, check_mongo_connection, render_status
+from my_utils import check_llm_connection, check_mongo_connection_pdfs, render_status
 
 # Base directory of the project
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -105,7 +105,7 @@ st.markdown("Ask questions about our documentation using the AI-powered guide as
 # Sidebar information
 with st.sidebar:
     st.header("⚙️ Info")
-    render_status("MongoDB", check_mongo_connection())      # 🟢 / 🔴
+    render_status("MongoDB", check_mongo_connection_pdfs())      # 🟢 / 🔴
     render_status("OpenAI API", check_llm_connection())     # 🟢 / 🔴
 
     st.header("📘 Manual Info")

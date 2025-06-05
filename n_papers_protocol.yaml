@@ -1,27 +1,45 @@
+# n_papers_protocol.yaml
+
 pipeline:
   - stage: retrieval
-    function: get_top_relevant_documents_multi
+    function: run_retrieval
     parameters:
       query: "{{user_query}}"
       top_n: 5
-    cot_template: |
-      Извлеките топ {top_n} релевантных фрагментов для запроса "{user_query}" 
-      из коллекции, содержащей несколько документов.
+    prompt_template: |
+      Retrieve the top {top_n} relevant chunks for the query "{user_query}" from the collection containing multiple documents.
 
   - stage: reasoning
-    function: generate_cot_answer
+    function: run_reasoning
     parameters:
       query: "{{user_query}}"
-      chunks: "{{get_top_relevant_documents_multi_output}}"
-    cot_template: |
-      Выполните многошаговый Chain-of-Thought анализ (CoT) запроса "{user_query}",
-      используя извлечённые фрагменты из нескольких документов.
-      Итеративно уточните ответ, проанализировав предыдущие версии.
+      chunks: "{{retrieval_output}}"
+    prompt_template: |
+      Initial Answer Generation:
+      Query: {user_query}
+
+      Context:
+      {context_chunks}
+
+      Please provide a concise initial answer to the query and indicate the source (filename) for each key piece of information.
+    cot_questions:
+      - "What are the main ideas extracted from the retrieved chunks? Indicate sources."
+      - "Are there any contradictions or differing perspectives among the sources? If so, which chunks?"
+      - "How can information from different chunks be combined to form a more comprehensive answer? Indicate sources."
+      - "Which chunks (sources) appear most reliable, and why? Provide a brief justification referencing chunk IDs."
+      - "Is any relevant information missing? Which additional chunks or sources could fill that gap?"
+      - "Summarize the final answer by integrating all relevant information and clearly indicating sources."
 
   - stage: qa_over_pdf
-    function: answer_query_from_multiple_pdfs
+    function: run_qa_over_pdf
     parameters:
       query: "{{user_query}}"
-    cot_template: |
-      Сформируйте итоговый ответ на запрос "{user_query}" на основе 
-      результатов рассуждения и релевантных фрагментов из нескольких документов.
+      chunks: "{{retrieval_output}}"
+    prompt_template: |
+      Based on the following chunks extracted from multiple PDF documents, please answer the query:
+      {user_query}
+
+      Context (chunks with sources):
+      {context_text}
+
+      Provide your answer, clearly indicating the source (filename) for each piece of information.

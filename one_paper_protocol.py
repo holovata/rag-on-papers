@@ -24,9 +24,6 @@ import tempfile
 from pathlib import Path
 
 import yaml
-import gridfs
-from pymongo.mongo_client import MongoClient
-from pymongo.server_api import ServerApi
 
 from langchain_openai import ChatOpenAI
 

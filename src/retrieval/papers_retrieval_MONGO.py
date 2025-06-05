@@ -119,6 +119,114 @@ def get_relevant_chunks(
     return docs
 
 
+def _count_chunks_per_pdf(db, collection_name: str) -> dict[str, int]:
+    """
+    Aggregate over arxiv_db.multi_paper_chunks to count total chunks per PDF.
+    Returns a dict: { "0704.0002.pdf": 16, ... }.
+    """
+    pipeline = [
+        { "$group": { "_id": "$source_pdf", "total": { "$sum": 1 } } }
+    ]
+    result = db[collection_name].aggregate(pipeline)
+    counts = {}
+    for doc in result:
+        counts[doc["_id"]] = doc["total"]
+    return counts
+
+
+def get_relevant_chunks_with_totals(
+    query: str,
+    top_n: int = DEFAULT_TOP_K,
+    min_similarity: float = MIN_SIMILARITY,
+    num_candidates: int = NUM_CANDIDATES,
+    db_name: str = DB_NAME,
+    chunk_collection: str = CHUNK_COL,
+    chunk_index_name: str = CHNK_INDEX
+) -> list[Document]:
+    """
+    Perform a vector search in arxiv_db.multi_paper_chunks, then attach 'total_chunks'
+    so downstream code can label “chunk i/N” easily.
+    """
+    try:
+        qe = config.embedding_function.embed_documents([query])[0]
+    except Exception as e:
+        debug_log(f"Failed to embed query: {e}")
+        return []
+
+    # 1) Build the MongoDB $vectorSearch pipeline:
+    pipeline = [
+        {
+            "$vectorSearch": {
+                "index": chunk_index_name,
+                "path": "embedding",
+                "queryVector": qe,
+                "numCandidates": num_candidates,
+                "limit": num_candidates
+            }
+        },
+        {
+            "$project": {
+                "_id":         1,
+                "source_pdf":  1,
+                "chunk_index": 1,
+                "content":     1,
+                "score":       { "$meta": "vectorSearchScore" }
+            }
+        }
+    ]
+
+    client = mongo_client()
+    db = client[db_name]
+    coll = db[chunk_collection]
+
+    try:
+        cursor = coll.aggregate(pipeline, maxTimeMS=45_000)
+    except Exception as e:
+        debug_log(f"❌ Vector search failed: {e}")
+        return []
+
+    # 2) Count total chunks per PDF:
+    counts_by_pdf = _count_chunks_per_pdf(db, chunk_collection)
+
+    # 3) Collect candidates with score ≥ min_similarity
+    candidates = []
+    for doc in cursor:
+        score = float(doc.get("score", 0.0))
+        if score >= min_similarity:
+            candidates.append({
+                "id":          doc["_id"],
+                "source":      doc.get("source_pdf", ""),
+                "chunk_index": doc.get("chunk_index", -1),
+                "content":     doc.get("content", ""),
+                "similarity":  score
+            })
+
+    if not candidates:
+        debug_log(f"⚠ No chunks with similarity ≥ {min_similarity:.2f}")
+        return []
+
+    # 4) Sort and take top_n
+    candidates.sort(key=lambda x: x["similarity"], reverse=True)
+    top_candidates = candidates[:top_n]
+    debug_log(f"🔍 Found {len(top_candidates)} chunks (max sim = {candidates[0]['similarity']:.4f}).")
+
+    # 5) Build Document objects, including total_chunks in metadata
+    docs: list[Document] = []
+    for c in top_candidates:
+        filename   = c["source"]
+        chunk_idx  = c["chunk_index"]
+        total      = counts_by_pdf.get(filename, 1)
+        metadata = {
+            "source":       filename,
+            "chunk_index":  chunk_idx,
+            "total_chunks": total,
+            "similarity":   c["similarity"],
+            "mongo_id":     c["id"]
+        }
+        docs.append(Document(page_content=c["content"], metadata=metadata))
+
+    return docs
+
 def main():
     try:
         conn_status = mongo_client().admin.command("ping")
